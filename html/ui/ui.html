@@ -1,0 +1,65 @@
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{title}}</title>
+    <script src="static/externals/js/jquery.js"></script>
+    <script src="static/externals/js/jquery-min.js"></script>
+    <script src="static/externals/js/jquery-ui.js"></script>
+    <script src="static/externals/js/ace/ace.js"></script>
+    <script src="static/externals/js/ace/aceext.js"></script>
+    <link rel="stylesheet" href="static/externals/css/vjs.css">
+    <link rel="stylesheet" href="static/externals/css/winbox-min.css">
+    <link rel="stylesheet" href="static/externals/css/winbox-modern.css">
+    <link rel="stylesheet" href="static/externals/css/dataTables-min.css">
+    <link rel="stylesheet" href="s/ui/ui.css?a={{date}}">
+    <script>
+      ace.config.set('basePath', '/static/externals/js/ace');
+      ace.config.set('modePath', '/static/externals/js/ace');
+      ace.config.set('themePath', '/static/externals/js/ace');
+      ace.config.set('workerPath', '/static/externals/js/ace');
+    </script>
+  </head>
+  <body>
+    <div id="logout"></div>
+    <div class="navbar">
+      <div class="dropdown">
+        <button class="dropbtn" onclick="menu()" id="menuBtn">
+          <img id="menuBtn" style="position: relative; margin:0; padding: 0; width: 2.3vh; height: 2.3vh;" src="static/icons/menu.svg">
+        </button>
+      </div>
+      <div class="dropdown-middle">
+        <input type="file" id="file_upload">
+        <button id="Clock" class="dropbtn"> 
+          <i class="fa fa-caret-down"></i>
+        </button>
+      </div> 
+    </div>
+
+    <div id="wallpaper" style='background-image: url("wallpaper");'>
+      <div id="Files">
+
+      </div>
+      <div id="menu">
+        <div id="leftMenu">
+          <img id="power" src="static/icons/off.svg">
+          <img id="settings" src="static/icons/settings.svg">
+        </div>
+        <div id="rightMenu">
+          <slot id="menuNotepad">
+            <img id="menuNotepad" style="margin-right: 12px;" src="static/icons/notepad.png">
+            <span id="menuNotepad">Notepad</span>
+          </slot>
+          <br>
+          <slot id="menuCalculator">
+            <img id="menuCalculator" style="margin-right: 12px;" src="static/icons/calculator.png">
+            <span id="menuCalculator">Calculator</span>
+          </slot>
+        </div>
+      </div>
+    </div>
+    <script src="static/externals/js/winbox-min.js"></script>
+    <script src="static/externals/js/vjs-min.js"></script>
+    <script src="s/ui/ui.js?a={{date}}"></script>
+  </body>
+</html>

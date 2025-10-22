@@ -1,0 +1,27 @@
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{title}}</title>
+    <style>
+      html {
+        background-color: #440c2f;
+        font-family: monospace;
+      }
+      p {
+        position: absolute;
+        margin:0;
+        top:50%;
+        left:50%;
+        transform: translate(-50%, -50%);
+        color: white;
+        font-size: 48px;
+        text-align: center;
+      }
+    </style>
+  </head>
+
+  <body>
+    <p><span style="font-size: 96px;">{{ code }}</span> {{ err }}</p>
+  </body>
+</html>

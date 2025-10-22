@@ -1,0 +1,24 @@
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="s/login/login.css?a={{date}}">
+    <title>{{title}}</title>
+  </head>
+  <body>
+    <div id="login">
+      <h1>Log In</h1>
+      <p id="notification"></p>
+      <input id="un" type="text" placeholder="Username" name="user" required>
+      <br id="sec" key={{key}} solution={{solution}}>
+      
+      <br>
+      <input id="pwd" type="password" placeholder="Password" name="pass" required>
+      
+      <button id="LoginButton">
+        Sign in
+      </button>
+    </div>
+    <script src="s/login/login.js?a={{date}}"></script>
+  </body>
+</html>
