@@ -52,8 +52,6 @@ if (tempData != null) {
         }
       });
       
-      console.log("Loaded positions from files:", globalData["filePositions"]);
-      
       loadFiles(JSON.stringify(files));
       
       setupSelectionRectangle();
@@ -302,21 +300,15 @@ function setupFileDragging(fileElement) {
   let startX, startY, offsetX, offsetY;
   let preventNextClick = false;
   let draggedFiles = [];
+  let clickedFileName, clickedCtrlKey;
   
   const onMouseDown = function(e) {
-    if (e.target.tagName === 'INPUT') return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     
     if (e.button !== 0) return;
     
-    const fileName = fileElement.getAttribute('data-name');
-    
-    if (!e.ctrlKey && !globalData["selectedFiles"].has(fileName)) {
-      clearSelection();
-      globalData["selectedFiles"].add(fileName);
-      fileElement.classList.add('selected');
-    } else if (e.ctrlKey) {
-      toggleFileSelection(fileName, true);
-    }
+    clickedFileName = fileElement.getAttribute('data-name');
+    clickedCtrlKey = e.ctrlKey;
     
     isDragging = true;
     hasMoved = false;
@@ -342,6 +334,19 @@ function setupFileDragging(fileElement) {
         el.style.zIndex = '1000';
       }
     });
+    
+    if (!globalData["selectedFiles"].has(clickedFileName)) {
+      const el = document.querySelector(`file[data-name="${clickedFileName}"]`);
+      if (el) {
+        draggedFiles.push({
+          element: el,
+          offsetX: e.clientX - el.getBoundingClientRect().left,
+          offsetY: e.clientY - el.getBoundingClientRect().top,
+          originalFileName: clickedFileName
+        });
+        el.style.zIndex = '1000';
+      }
+    }
     
     e.preventDefault();
     e.stopPropagation();
@@ -383,6 +388,20 @@ function setupFileDragging(fileElement) {
   
   const onMouseUp = function(e) {
     if (!isDragging) return;
+    
+    if (e.target.closest('context')) return;
+    
+    if (!hasMoved) {
+      if (clickedCtrlKey) {
+        toggleFileSelection(clickedFileName, true);
+      } else {
+        if (!globalData["selectedFiles"].has(clickedFileName) || globalData["selectedFiles"].size > 1) {
+          clearSelection();
+          globalData["selectedFiles"].add(clickedFileName);
+          fileElement.classList.add('selected');
+        }
+      }
+    }
     
     isDragging = false;
     draggedFiles.forEach(df => {
@@ -564,6 +583,10 @@ function setupTooltipPositioning(fileEl) {
   });
 }
 
+function isInWinBox(element) {
+  return element.closest('.winbox') !== null;
+}
+
 function setupSelectionRectangle() {
   if (globalData["selectionRectangleSetup"]) return;
   globalData["selectionRectangleSetup"] = true;
@@ -579,11 +602,14 @@ function setupSelectionRectangle() {
   
   let isSelecting = false;
   let selectStartX, selectStartY;
-  let initialSelection = new Set();
   globalData["hasSelectedFiles"] = false;
   
   document.addEventListener('mousedown', function(e) {
     if (e.button !== 0) return;
+    
+    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+    
+    if (isInWinBox(e.target)) return;
     
     const isOnFile = e.target.closest('file[data-name]');
     if (isOnFile) return;
@@ -596,11 +622,7 @@ function setupSelectionRectangle() {
     
     if (!isInContainer) return;
     
-    initialSelection = new Set(globalData["selectedFiles"]);
-    
-    if (!e.ctrlKey) {
-      clearSelection();
-    }
+    clearSelection();
     
     isSelecting = true;
     globalData["hasSelectedFiles"] = false;
@@ -639,13 +661,8 @@ function setupSelectionRectangle() {
       bottom: top + height
     };
     
-    globalData["selectedFiles"] = new Set(initialSelection);
-    document.querySelectorAll('file.selected').forEach(el => {
-      if (!initialSelection.has(el.getAttribute('data-name'))) {
-        el.classList.remove('selected');
-      }
-    });
-    
+    globalData["selectedFiles"] = new Set();
+    document.querySelectorAll('file.selected').forEach(el => el.classList.remove('selected'));
     selectFilesInRectangle(rect);
     globalData["hasSelectedFiles"] = (width > 5 || height > 5);
   });
@@ -674,14 +691,16 @@ document.addEventListener("contextmenu", (event)=>{
     }, 500);
   };
   globalData["focused"] = "none";
+
   hideContext();
   event.preventDefault();
   if (event.target.hasAttribute("data-name")) {
+    document.documentElement.style.setProperty('--tooltip-display', 'none');
     var id = event.target.getAttribute("data-name");
     var extension = event.target.getAttribute("extension");
     var e = document.createElement("context");
     
-    const isMultiSelected = globalData["selectedFiles"].size > 1 && globalData["selectedFiles"].has(id);
+    const isMultiSelected = globalData["selectedFiles"].size > 1;
     const removeLabel = isMultiSelected ? `Remove (${globalData["selectedFiles"].size} files)` : 'Remove';
     const downloadLabel = isMultiSelected ? `Download (${globalData["selectedFiles"].size} files)` : 'Download';
     
@@ -689,11 +708,11 @@ document.addEventListener("contextmenu", (event)=>{
     if (!isMultiSelected) {
         menuHTML += `<button onclick='Fopen("${id}", "${extension}")'>Open</button>`;
     }
-    menuHTML += `<button onclick='Fdownload("${id}")'>${downloadLabel}</button>`;
+    menuHTML += `<button onclick='${isMultiSelected ? "FdownloadMulti()" : `Fdownload("${id}")` }'>${downloadLabel}</button>`;
     if (!isMultiSelected) {
         menuHTML += `<button onclick='Frename("${id}")'>Rename</button>`;
     }
-    menuHTML += `<button onclick='Fremove("${id}")'>${removeLabel}</button>`;
+    menuHTML += `<button onclick='${isMultiSelected ? "FremoveMulti()" : `Fremove("${id}")` }'>${removeLabel}</button>`;
     
     e.innerHTML = menuHTML;
     
@@ -823,37 +842,42 @@ async function Fsetwallpaper(file) {
 };
 
 async function Fdownload(file) {
-  if (globalData["selectedFiles"].size > 1 && globalData["selectedFiles"].has(file)) {
-    const filesToDownload = Array.from(globalData["selectedFiles"]);
-    for (const fname of filesToDownload) {
-      const response = await fetch(`${window.location.origin}/files/get/${fname}`);
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = fname;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      window.URL.revokeObjectURL(url);
-      
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-  } else {
-    const response = await fetch(`${window.location.origin}/files/get/${file}`);
+  const filesToDownload = globalData["selectedFiles"].size > 0 ? Array.from(globalData["selectedFiles"]) : [file];
+  for (const fname of filesToDownload) {
+    const response = await fetch(`${window.location.origin}/files/get/${fname}`);
     const blob = await response.blob();
     const url = window.URL.createObjectURL(blob);
 
     const link = document.createElement('a');
     link.href = url;
-    link.download = file;
+    link.download = fname;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
 
     window.URL.revokeObjectURL(url);
+    
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+};
+
+async function FdownloadMulti() {
+  const filesToDownload = Array.from(globalData["selectedFiles"]);
+  for (const fname of filesToDownload) {
+    const response = await fetch(`${window.location.origin}/files/get/${fname}`);
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fname;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    window.URL.revokeObjectURL(url);
+    
+    await new Promise(resolve => setTimeout(resolve, 200));
   }
 };
 
@@ -974,15 +998,15 @@ async function Fcreate() {
       return;
     }
     
-    if (newName.includes('/') || newName.includes('\\')) {
-      await prompt('Name cannot contain path separators', 'Create file', 'Ok');
-      setTimeout(() => { try { input.focus(); input.select(); } catch {} }, 10);
+    if (newName.includes('/') || newName.includes('\\') || newName.includes(':') || newName.startsWith('.') || newName.includes(';') || newName.includes('*') || newName.includes('?') || newName.includes('"') || newName.includes('<') || newName.includes('>') || newName.includes('|') || newName.includes("'")) {
+      prompt('Name cannot contain illegal characters', 'Create file', 'Ok');
+      cleanup();
       return;
     }
     
     if (document.getElementById("F" + newName)) {
-      await prompt('File with that name already exists', 'Create file', 'Ok');
-      setTimeout(() => { try { input.focus(); input.select(); } catch {} }, 10);
+      prompt('File with that name already exists', 'Create file', 'Ok');
+      cleanup();
       return;
     }
     
@@ -1036,32 +1060,36 @@ async function Fcreate() {
 };
 
 async function Fremove(file) {
-    if (globalData["selectedFiles"].size > 1) {
-      const filesToRemove = Array.from(globalData["selectedFiles"]);
-      for (const fname of filesToRemove) {
-        const response = await post("files/remove",{"file":fname});
-        if (response == "Removed" || response == "File not found") {
-          document.getElementById("F"+fname)?.remove();
-          delete globalData["filePositions"][fname];
-          globalData["selectedFiles"].delete(fname);
-        }
-      }
-      saveFilePositions();
-    } else {
-      const response = await post("files/remove",{"file":file});
-      if (response == "Removed" || response == "File not found") {
-        document.getElementById("F"+file)?.remove();
-        delete globalData["filePositions"][file];
-        globalData["selectedFiles"].delete(file);
-        saveFilePositions();
-      }
+  const filesToRemove = globalData["selectedFiles"].size > 0 ? Array.from(globalData["selectedFiles"]) : [file];
+  for (const fname of filesToRemove) {
+    const response = await post("files/remove",{"file":fname});
+    if (response == "Removed" || response == "File not found") {
+      document.getElementById("F"+fname)?.remove();
+      delete globalData["filePositions"][fname];
+      globalData["selectedFiles"].delete(fname);
     }
+  }
+  saveFilePositions();
+};
+
+async function FremoveMulti() {
+  const filesToRemove = Array.from(globalData["selectedFiles"]);
+
+  for (const fname of filesToRemove) {
+    const response = await post("files/remove",{"file":fname});
+    if (response == "Removed" || response == "File not found") {
+      document.getElementById("F"+fname)?.remove();
+      delete globalData["filePositions"][fname];
+      globalData["selectedFiles"].delete(fname);
+    }
+  }
+  saveFilePositions();
 };
 
 function hideContext() {
   try {
     var elements = document.getElementsByTagName("context");
-
+    document.documentElement.style.setProperty('--tooltip-display', 'block');
     for(let i = 0;i < elements.length; i++) {
         elements[i].remove();
     };
@@ -1393,7 +1421,22 @@ async function saveNotepad(file) {
       <span extension="Text document" data-name="${file}">${file}</span>
       <div extension="Text document" data-name="${file}" class="tooltip">Type: ${response.type}<br>Size: ${response.size}<br>Change: ${response.last_change}</div>
     `;
+
+    let pos;
+    if (globalData["contextClickPosition"]) {
+      const clickPos = globalData["contextClickPosition"];
+      const snapped = snapToGrid(clickPos.x, clickPos.y);
+      pos = findNearestFreeSlot(snapped.col, snapped.row, file);
+      globalData["contextClickPosition"] = null;
+    } else {
+      pos = findNextFreeGridSlot();
+    }
+
+    setFilePosition(e, pos.col, pos.row);
+    globalData["filePositions"][file] = pos;
     document.getElementById("Files").appendChild(e);
+    setupFileDragging(e);
+    saveFilePositions([file]);
   };
 };
 
@@ -1509,6 +1552,7 @@ function calcValue(value) {
 
 function openNotepad(text,file,key) {
   var prompted = false;
+  var dynamic = false;
   var e = document.createElement("div");
   var windowData = getWindowData("notepad",key);
   globalData["mTab"][key] = false;
@@ -1517,6 +1561,7 @@ function openNotepad(text,file,key) {
   if (file==null) {
     text = "";
     title="Notepad";
+    dynamic = true;
     file = (Math.random() + 1).toString(36).substring(7)+".txt";
   }
 
@@ -1563,15 +1608,16 @@ function openNotepad(text,file,key) {
       if (isMinimized) return;
       isMinimized = true;
       globalData["mTab"][key] = true;
-      console.log("minimalized", key)
     },
     onfocus: () => {
       isMinimized = false;
       globalData["mTab"][key] = false;
     },
     oncreate: () => {
-      globalData["openedWindows"][key] = {"file": file, "extension": "Text document", "size": {"width": windowData.width, "height": windowData.height}, "position": {"x": windowData.x, "y": windowData.y}};
-      saveOpenedWindowsState();
+      if (!dynamic) {
+        globalData["openedWindows"][key] = {"file": file, "extension": "Text document", "size": {"width": windowData.width, "height": windowData.height}, "position": {"x": windowData.x, "y": windowData.y}};
+        saveOpenedWindowsState();
+      }
     }
    });
 
