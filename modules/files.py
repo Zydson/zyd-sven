@@ -2,6 +2,8 @@ from globals import *
 import mimetypes
 import subprocess
 import shutil
+import posixpath
+
 
 files_bp = Blueprint('files', __name__)
 
@@ -149,7 +151,16 @@ def _user_base():
     return os.path.join(current_app.config['UPLOAD_FOLDER'], uid)
 
 def _user_file_path(filename: str) -> str:
-    return os.path.join(_user_base(), filename)
+    base = _user_base()
+    safe = str(filename or '').replace('\\', '/').strip()
+    safe = posixpath.normpath(safe)
+    if safe.startswith('../') or safe.startswith('..') or safe.startswith('/'):
+        raise ValueError('Invalid path')
+    full = os.path.join(base, safe)
+    full = os.path.normpath(full)
+    if not full.startswith(os.path.normpath(base) + os.sep) and os.path.normpath(base) != full:
+        raise ValueError('Invalid path')
+    return full
 
 def _upsert_file_record(login: str, name: str, ftype: str, size: str):
     for i, x in enumerate(Accounts[login]["files"]):
@@ -209,7 +220,10 @@ def get_file(file):
     uid = request.cookies.get('uid')
     base = os.path.join(current_app.config['UPLOAD_FOLDER'], uid)
     filename = file.split("&")[0]
-    path = os.path.join(base, filename)
+    try:
+        path = _user_file_path(filename)
+    except Exception:
+        return make_response(jsonify({"error": "Invalid path"}), 400)
 
     if "." in filename:
         file_type = filename.split(".")[-1]
@@ -257,17 +271,20 @@ def upload_file():
 
                 base_dir = _user_base()
                 os.makedirs(base_dir, exist_ok=True)
-                handler = open(os.path.join(base_dir, data['file']), "w+", encoding='utf-8')
+                target_path = _user_file_path(data['file'])
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                handler = open(target_path, "w+", encoding='utf-8')
                 handler.write(data["data"])
                 handler.close()
-                size = getFileSize(os.path.join(base_dir, data['file']))
+                size = getFileSize(target_path)
                 login = request.cookies.getlist('login')[0]
                 return _upsert_file_record(login, data['file'], file_type, size)
             else:
                 file = request.files['file']
                 base_dir = _user_base()
                 os.makedirs(base_dir, exist_ok=True)
-                file_path = os.path.join(base_dir, file.filename)
+                file_path = _user_file_path(file.filename)
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
                 file.save(file_path)
 
                 if "." in file.filename:
@@ -296,16 +313,24 @@ def remove_file():
             file_path = _user_file_path(data["file"])
             login = request.cookies.getlist('login')[0]
             flist = Accounts[login]["files"]
-            new_list = [x for x in flist if x.get("file") != data["file"]]
-            if len(new_list) != len(flist):
+            if os.path.isdir(file_path):
+                prefix = (data["file"].rstrip('/') + '/').replace('\\', '/')
+                new_list = [x for x in flist if not (str(x.get("file") or '').replace('\\','/').startswith(prefix) or str(x.get("file") or '').replace('\\','/') == data["file"].rstrip('/')+'/')]
+                new_list = [x for x in new_list if str(x.get("file") or '') != data["file"] and str(x.get("file") or '') != data["file"].rstrip('/')+'/']
                 Accounts[login]["files"] = new_list
                 updateJson()
-
-            if os.path.exists(file_path):
-                os.remove(file_path)
+                shutil.rmtree(file_path, ignore_errors=True)
                 return "Removed"
             else:
-                return "File not found"
+                new_list = [x for x in flist if str(x.get("file") or '') != data["file"]]
+                if len(new_list) != len(flist):
+                    Accounts[login]["files"] = new_list
+                    updateJson()
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    return "Removed"
+                else:
+                    return "File not found"
         else:
             return make_response(jsonify({"error": "Unauthorized"}), 401)
     except Exception as e:
@@ -372,7 +397,10 @@ def save_positions():
         
         files = Accounts[login]["files"]
         for file_data in files:
-            file_name = file_data.get("file")
+            file_name = str(file_data.get("file") or '')
+            if '/' in file_name.strip('/'): 
+                file_data["position"] = None
+                continue
             if file_name in positions:
                 file_data["position"] = positions[file_name]
             elif "position" not in file_data:
@@ -486,6 +514,346 @@ def _which_tool(candidates):
             return c
     return None
 
+def _safe_norm_path(p: str) -> str:
+    s = str(p or '').replace('\\', '/').strip()
+    s = posixpath.normpath(s)
+    if s in ('', '.', './'):
+        return ''
+    if s.startswith('../') or s.startswith('..') or s.startswith('/'):
+        raise ValueError('Invalid path')
+    return s
+
+_WIN_RESERVED_NAMES = {
+    'CON','PRN','AUX','NUL',
+    'COM1','COM2','COM3','COM4','COM5','COM6','COM7','COM8','COM9',
+    'LPT1','LPT2','LPT3','LPT4','LPT5','LPT6','LPT7','LPT8','LPT9'
+}
+
+def _sanitize_windows_segment(seg: str) -> str:
+    illegal = '<>:"\\/|?*'
+    out = ''.join(('_' if ch in illegal else ch) for ch in seg)
+    out = out.rstrip(' .')
+    if not out:
+        out = '_'
+    base = out.split('.', 1)[0].upper()
+    if base in _WIN_RESERVED_NAMES:
+        out = f"{out}_"
+    return out
+
+def _sanitize_rel_path(rel: str) -> str:
+    parts = [p for p in rel.split('/') if p not in ('', '.', '..')]
+    safe_parts = [_sanitize_windows_segment(p) for p in parts]
+    return '/'.join(safe_parts)
+
+def _extract_rar_external_folder(archive_path: str, prefix: str, final_path: str) -> bool:
+    """Extract a folder prefix from a RAR archive into final_path using 7-Zip/UnRAR in one shot.
+    Returns True on success, False otherwise.
+    """
+    import tempfile
+    tmpdir = tempfile.mkdtemp(prefix='rar_bulk_')
+    ok = False
+    try:
+        seven_zip = _which_tool([
+            '7z', '7z.exe',
+            r'C:\\Program Files\\7-Zip\\7z.exe',
+            r'C:\\Program Files (x86)\\7-Zip\\7z.exe'
+        ])
+        pp = _norm_arc_path(prefix)
+        pp = pp.rstrip('/')
+        if seven_zip and os.path.exists(seven_zip):
+            include_pat = f"-ir!{pp}/*"
+            try:
+                proc = subprocess.run([seven_zip, 'x', '-y', '-p-', archive_path, f"-o{tmpdir}", include_pat],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+                if proc.returncode == 0:
+                    ok = True
+            except Exception:
+                pass
+        if not ok:
+            unrar = _which_tool([
+                'unrar', 'unrar.exe',
+                r'C:\\Program Files\\WinRAR\\UnRAR.exe',
+                r'C:\\Program Files\\WinRAR\\UnRAR64.exe',
+                r'C:\\Program Files\\WinRAR\\unrar.exe',
+                r'C:\\Program Files (x86)\\WinRAR\\UnRAR.exe',
+                r'C:\\Program Files (x86)\\WinRAR\\UnRAR64.exe',
+                r'C:\\Program Files (x86)\\WinRAR\\unrar.exe'
+            ])
+            if unrar and os.path.exists(unrar):
+                pat = pp.replace('/', '\\') + '\\*'
+                try:
+                    proc = subprocess.run([unrar, 'x', '-y', archive_path, pat, tmpdir],
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+                    if proc.returncode == 0:
+                        ok = True
+                except Exception:
+                    pass
+
+        if ok:
+            src_candidates = [os.path.join(tmpdir, pp), os.path.join(tmpdir, pp.replace('/', os.sep))]
+            src_root = None
+            for c in src_candidates:
+                if os.path.exists(c):
+                    src_root = c
+                    break
+            if not src_root:
+                last = pp.split('/')[-1]
+                c = os.path.join(tmpdir, last)
+                if os.path.exists(c):
+                    src_root = c
+            if not src_root:
+                return False
+            os.makedirs(final_path, exist_ok=True)
+            for name in os.listdir(src_root):
+                s = os.path.join(src_root, name)
+                d = os.path.join(final_path, name)
+                try:
+                    if os.path.exists(d):
+                        if os.path.isdir(d) and os.path.isdir(s):
+                            for root, dirs, files in os.walk(s):
+                                rel = os.path.relpath(root, s)
+                                tgt_dir = os.path.join(d, rel) if rel != '.' else d
+                                os.makedirs(tgt_dir, exist_ok=True)
+                                for fn in files:
+                                    shutil.move(os.path.join(root, fn), os.path.join(tgt_dir, fn))
+                        else:
+                            if os.path.isdir(d):
+                                shutil.rmtree(d, ignore_errors=True)
+                            else:
+                                try:
+                                    os.remove(d)
+                                except Exception:
+                                    pass
+                            shutil.move(s, d)
+                    else:
+                        shutil.move(s, d)
+                except Exception as e:
+                    print(f"[WARN] move after bulk extract failed: {s} -> {d} - {e}")
+            return True
+        return False
+    finally:
+        try:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        except Exception:
+            pass
+
+def _record_tree(login: str, root_rel: str, now: str):
+    """Walk the extracted directory and upsert file/folder records."""
+    base_path = _user_file_path(root_rel)
+    files = Accounts[login]["files"]
+    folder_key = root_rel.rstrip('/') + '/'
+    if not any((x.get('file') == folder_key) for x in files):
+        files.append({"file": folder_key, "type": "Folder", "size": '-', "last_change": now, "position": None})
+    for dirpath, dirnames, filenames in os.walk(base_path):
+        rel_dir = os.path.relpath(dirpath, _user_base())
+        rel_dir = rel_dir.replace('\\', '/')
+        if rel_dir == '.':
+            rel_dir = ''
+        if rel_dir:
+            dkey = rel_dir.rstrip('/') + '/'
+            if not any((x.get('file') == dkey) for x in files):
+                files.append({"file": dkey, "type": "Folder", "size": '-', "last_change": now, "position": None})
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, _user_base()).replace('\\', '/')
+            size = getFileSize(full)
+            ext = rel.rsplit('.', 1)[-1].lower() if '.' in rel else ''
+            ftype = file_types.get(ext, 'Unknown')
+            existing = next((x for x in files if x.get('file') == rel), None)
+            if existing:
+                existing['size'] = size
+                existing['last_change'] = now
+                if '/' in rel:
+                    existing['position'] = None
+            else:
+                files.append({"file": rel, "type": ftype, "size": size, "last_change": now, "position": None})
+
+@files_bp.route('/folders/create', methods=['POST'])
+def create_folder():
+    try:
+        if not allowed(request):
+            return make_response(jsonify({"error": "Unauthorized"}), 401)
+
+        data = request.get_json() or {}
+        raw = (data.get('path') or '').strip()
+        if not raw:
+            return make_response(jsonify({"error": "Invalid name"}), 400)
+        try:
+            rel = _safe_norm_path(raw)
+        except Exception:
+            return make_response(jsonify({"error": "Invalid path"}), 400)
+
+        full = _user_file_path(rel)
+        os.makedirs(full, exist_ok=True)
+
+        login = request.cookies.getlist('login')[0]
+        files = Accounts[login]["files"]
+        folder_key = rel.rstrip('/') + '/'
+        exists = any((x.get('file') == folder_key) for x in files)
+        if not exists:
+            now = datetime.datetime.today().strftime('%Y-%m-%d %H:%M')
+            rec = {"file": folder_key, "type": "Folder", "size": '-', "last_change": now, "position": None}
+            files.append(rec)
+            updateJson()
+        else:
+            rec = next(x for x in files if x.get('file') == folder_key)
+
+        return make_response(jsonify(rec), 200)
+    except Exception as e:
+        print(f"[ERR] folders/create - {str(e)}")
+        return make_response(jsonify({"error": "Failed to create folder"}), 500)
+
+@files_bp.route('/folders/list', methods=['GET'])
+def list_folder():
+    try:
+        if not allowed(request):
+            return make_response(jsonify({"error": "Unauthorized"}), 401)
+        path = request.args.get('path', '').strip()
+        try:
+            rel = _safe_norm_path(path)
+        except Exception:
+            return make_response(jsonify({"error": "Invalid path"}), 400)
+
+        login = request.cookies.get('login')
+        files = Accounts[login]["files"]
+        prefix = rel.rstrip('/') + '/' if rel else ''
+        results = {}
+        for x in files:
+            name = str(x.get('file') or '')
+            nposix = name.replace('\\', '/')
+            if not nposix.startswith(prefix):
+                continue
+            rest = nposix[len(prefix):]
+            if rest == '':
+                continue
+            if '/' in rest.strip('/'): 
+                first = rest.split('/', 1)[0] + '/'
+                child_key = prefix + first
+                results[child_key] = {
+                    'name': child_key,
+                    'display': first.rstrip('/'),
+                    'size': '-',
+                    'modified': '-',
+                    'is_dir': True
+                }
+            else:
+                is_dir = rest.endswith('/') or x.get('type') == 'Folder'
+                if is_dir:
+                    child_name = prefix + rest.rstrip('/') + '/'
+                    results[child_name] = {
+                        'name': child_name,
+                        'display': rest.rstrip('/'),
+                        'size': '-',
+                        'modified': '-',
+                        'is_dir': True
+                    }
+                else:
+                    results[prefix + rest] = {
+                        'name': prefix + rest,
+                        'display': rest,
+                        'size': x.get('size', '-'),
+                        'modified': x.get('last_change', '-'),
+                        'is_dir': False
+                    }
+        out = list(results.values())
+        out.sort(key=lambda i: (not i['is_dir'], i['display'].lower()))
+        return make_response(jsonify(out), 200)
+    except Exception as e:
+        print(f"[ERR] folders/list - {str(e)}")
+        return make_response(jsonify({"error": "Failed to list folder"}), 500)
+
+@files_bp.route('/move', methods=['POST'])
+def move_file():
+    try:
+        if not allowed(request):
+            return make_response(jsonify({"error": "Unauthorized"}), 401)
+        data = request.get_json() or {}
+        old = (data.get('old') or '').strip()
+        new = (data.get('new') or '').strip()
+        if not old or not new:
+            return make_response(jsonify({"error": "Invalid move"}), 400)
+        try:
+            old_rel = _safe_norm_path(old)
+            new_rel = _safe_norm_path(new)
+        except Exception:
+            return make_response(jsonify({"error": "Invalid path"}), 400)
+
+        old_rel_norm = old_rel.rstrip('/')
+        new_rel_norm = new_rel.rstrip('/')
+        if old_rel_norm and (new_rel_norm == old_rel_norm or new_rel_norm.startswith(old_rel_norm + '/')):
+            return make_response(jsonify({"error": "Cannot move a folder into itself"}), 400)
+
+        old_path = _user_file_path(old_rel)
+        new_path = _user_file_path(new_rel)
+        moving_dir = os.path.isdir(old_path)
+        os.makedirs(os.path.dirname(new_path), exist_ok=True)
+        if not os.path.exists(old_path):
+            print(f"[DEBUG] Move: old_path does not exist")
+            login = request.cookies.get('login')
+            files = Accounts[login]["files"]
+            idx = next((i for i,x in enumerate(files) if str(x.get('file') or '') == old), -1)
+            if idx >= 0:
+                files.pop(idx)
+                updateJson()
+            return make_response(jsonify({"status": "Removed"}), 200)
+        if os.path.exists(new_path):
+            base_rel = new_rel.rstrip('/') if moving_dir else new_rel
+            parent_rel = posixpath.dirname(base_rel)
+            base_name = posixpath.basename(base_rel)
+            stem = base_name
+            ext = ''
+            if not moving_dir and '.' in base_name:
+                stem, ext = base_name.rsplit('.', 1)
+                ext = '.' + ext
+            candidate_rel = base_rel
+            n = 1
+            while os.path.exists(_user_file_path(candidate_rel)):
+                candidate_name = f"{stem} ({n}){ext}"
+                candidate_rel = posixpath.join(parent_rel, candidate_name) if parent_rel else candidate_name
+                n += 1
+            new_rel = candidate_rel
+            new_path = _user_file_path(new_rel)
+        os.rename(old_path, new_path)
+
+        login = request.cookies.get('login')
+        files = Accounts[login]["files"]
+        idx = next((i for i,x in enumerate(files) if str(x.get("file") or '') == old), -1)
+        size = getFileSize(new_path)
+        now = datetime.datetime.today().strftime('%Y-%m-%d %H:%M')
+        external_new_name = (new_rel.rstrip('/') + '/') if moving_dir else new_rel
+        if idx >= 0:
+            files[idx]['file'] = external_new_name
+            files[idx]['size'] = size
+            files[idx]['last_change'] = now
+            if '/' in external_new_name:
+                files[idx]['position'] = None
+        else:
+            ext = external_new_name.rsplit('.', 1)[-1].lower() if '.' in external_new_name else ''
+            ntype = file_types.get(ext, 'Unknown')
+            if moving_dir:
+                ntype = 'Folder'
+            files.append({"file": external_new_name, "type": ntype, "size": size, "last_change": now, "position": None})
+
+        if moving_dir:
+            old_prefix = (old.rstrip('/') + '/').replace('\\', '/')
+            new_prefix = (external_new_name.rstrip('/') + '/').replace('\\', '/')
+            for rec in files:
+                fname = str(rec.get('file') or '')
+                nposix = fname.replace('\\', '/')
+                if nposix == old_prefix[:-1] or nposix.startswith(old_prefix):
+                    if nposix == old_prefix[:-1]:
+                        new_name = new_prefix[:-1]
+                    else:
+                        new_name = new_prefix + nposix[len(old_prefix):]
+                    rec['file'] = new_name
+                    rec['last_change'] = now
+                    if '/' in rec['file']:
+                        rec['position'] = None
+        updateJson()
+        return make_response(jsonify({"status": "Moved", "file": external_new_name}), 200)
+    except Exception as e:
+        print(f"[ERR] files/move - {str(e)}")
+        return make_response(jsonify({"error": "Failed to move"}), 500)
 def _extract_rar_external(archive_path: str, member: str) -> bytes | None:
     seven_zip = _which_tool([
         '7z', '7z.exe',
@@ -742,3 +1110,303 @@ def list_archive_files(file):
     except Exception as e:
         print(f"[ERR] files/archive/list - {str(e)}")
         return make_response(jsonify({"error": "Failed to read archive"}), 500)
+
+
+@files_bp.route('/archive/extract', methods=['POST'])
+def extract_from_archive():
+    try:
+        if not allowed(request):
+            return make_response(jsonify({"error": "Unauthorized"}), 401)
+
+        data = request.get_json() or {}
+        archive_rel = (data.get('archive') or '').strip()
+        internal_path = (data.get('path') or '').strip()
+        dest_name = (data.get('dest') or '').strip()
+        if not archive_rel or not internal_path:
+            return make_response(jsonify({"error": "Invalid request"}), 400)
+
+        try:
+            archive_rel_norm = _safe_norm_path(archive_rel)
+        except Exception:
+            return make_response(jsonify({"error": "Invalid archive path"}), 400)
+
+        uid = request.cookies.get('uid')
+        base = os.path.join(current_app.config['UPLOAD_FOLDER'], uid)
+        archive_path = os.path.join(base, archive_rel_norm)
+        if not os.path.isfile(archive_path):
+            return make_response(jsonify({"error": "Archive not found"}), 404)
+
+        norm_sub = _norm_arc_path(internal_path)
+        if not norm_sub:
+            return make_response(jsonify({"error": "Invalid internal path"}), 400)
+
+        lower = archive_rel.lower()
+
+        entry_map = {}
+        arc_type = None
+        if lower.endswith('.zip'):
+            arc_type = 'zip'
+            with zipfile.ZipFile(archive_path, 'r') as zf:
+                for i in zf.infolist():
+                    n = _norm_arc_path(_entry_name(i))
+                    if n:
+                        entry_map[n] = i
+        elif lower.endswith('.rar'):
+            arc_type = 'rar'
+            try:
+                with rarfile.RarFile(archive_path, 'r') as rf:
+                    for i in rf.infolist():
+                        n = _norm_arc_path(_entry_name(i))
+                        if n:
+                            entry_map[n] = i
+            except rarfile.RarCannotExec:
+                return make_response(jsonify({"error": "RAR extraction not available"}), 500)
+        elif lower.endswith('.tar'):
+            arc_type = 'tar'
+            with tarfile.open(archive_path, 'r') as tf:
+                for i in tf.getmembers():
+                    n = _norm_arc_path(_entry_name(i))
+                    if n:
+                        entry_map[n] = i
+        else:
+            return make_response(jsonify({"error": "Unsupported archive type"}), 400)
+
+        is_dir = any((k == norm_sub and (getattr(entry_map[k], 'is_dir', False) if arc_type == 'tar' else (str(k).endswith('/') or False))) for k in entry_map)
+        if not is_dir:
+            prefix = norm_sub.rstrip('/') + '/'
+            is_dir = any(name.startswith(prefix) for name in entry_map.keys())
+
+        base_name = dest_name or norm_sub.rstrip('/').split('/')[-1]
+        base_name = _sanitize_windows_segment(base_name)
+        if not base_name:
+            return make_response(jsonify({"error": "Invalid destination name"}), 400)
+
+        if is_dir:
+            desired_rel = base_name.rstrip('/') + '/'
+        else:
+            desired_rel = base_name
+
+        parent_rel = posixpath.dirname(desired_rel.rstrip('/'))
+        base_only = posixpath.basename(desired_rel.rstrip('/'))
+        stem = base_only
+        ext = ''
+        if not is_dir and '.' in base_only:
+            stem, ext = base_only.rsplit('.', 1)
+            ext = '.' + ext
+        candidate_rel = desired_rel.rstrip('/')
+        n = 1
+        while True:
+            candidate_path = _user_file_path(candidate_rel + ('/' if is_dir else ''))
+            if not os.path.exists(candidate_path):
+                break
+            candidate_name = f"{stem} ({n}){ext}"
+            candidate_rel = posixpath.join(parent_rel, candidate_name) if parent_rel else candidate_name
+            n += 1
+        final_rel = candidate_rel + ('/' if is_dir else '')
+        final_path = _user_file_path(final_rel)
+
+        os.makedirs(final_path if is_dir else os.path.dirname(final_path), exist_ok=True)
+
+        written_files = []
+        created_dirs = set()
+        now = datetime.datetime.today().strftime('%Y-%m-%d %H:%M')
+        if is_dir:
+            prefix = norm_sub.rstrip('/') + '/'
+            if arc_type == 'zip':
+                with zipfile.ZipFile(archive_path, 'r') as zf:
+                    for info in zf.infolist():
+                        name = _norm_arc_path(_entry_name(info))
+                        if not name.startswith(prefix):
+                            continue
+                        rel_sub = name[len(prefix):]
+                        if not rel_sub:
+                            continue
+                        rel_sub = _sanitize_rel_path(rel_sub)
+                        target_rel = posixpath.join(final_rel.rstrip('/'), rel_sub)
+                        target_path = _user_file_path(target_rel)
+                        if getattr(info, 'is_dir', lambda: False)() if hasattr(info, 'is_dir') else name.endswith('/'):
+                            os.makedirs(target_path, exist_ok=True)
+                            created_dirs.add((target_rel.rstrip('/') + '/').replace('\\', '/'))
+                        else:
+                            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                            try:
+                                with zf.open(info, 'r') as src, open(target_path, 'wb') as out:
+                                    shutil.copyfileobj(src, out)
+                                written_files.append(target_rel.replace('\\', '/'))
+                            except Exception as e:
+                                print(f"[WARN] zip extract skip: {target_rel} - {e}")
+                            parent = posixpath.dirname(target_rel)
+                            while parent and parent.startswith(final_rel.rstrip('/')):
+                                created_dirs.add((parent.rstrip('/') + '/').replace('\\', '/'))
+                                new_parent = posixpath.dirname(parent)
+                                if new_parent == parent:
+                                    break
+                                parent = new_parent
+            elif arc_type == 'rar':
+                bulk_ok = _extract_rar_external_folder(archive_path, prefix, final_path)
+                if not bulk_ok:
+                    try:
+                        with rarfile.RarFile(archive_path, 'r') as rf:
+                            for info in rf.infolist():
+                                name = _norm_arc_path(_entry_name(info))
+                                if not name.startswith(prefix):
+                                    continue
+                                rel_sub = name[len(prefix):]
+                                if not rel_sub:
+                                    continue
+                                rel_sub = _sanitize_rel_path(rel_sub)
+                                target_rel = posixpath.join(final_rel.rstrip('/'), rel_sub)
+                                target_path = _user_file_path(target_rel)
+                                if callable(getattr(info, 'is_dir', None)) and info.is_dir():
+                                    os.makedirs(target_path, exist_ok=True)
+                                    created_dirs.add((target_rel.rstrip('/') + '/').replace('\\', '/'))
+                                else:
+                                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                                    try:
+                                        with rf.open(info) as src, open(target_path, 'wb') as out:
+                                            shutil.copyfileobj(src, out)
+                                        written_files.append(target_rel.replace('\\', '/'))
+                                    except Exception as e:
+                                        fb = _extract_rar_external(archive_path, name)
+                                        if fb:
+                                            with open(target_path, 'wb') as out:
+                                                out.write(fb)
+                                            written_files.append(target_rel.replace('\\', '/'))
+                                        else:
+                                            print(f"[WARN] rar extract skip: {target_rel} - {e}")
+                                    parent = posixpath.dirname(target_rel)
+                                    while parent and parent.startswith(final_rel.rstrip('/')):
+                                        created_dirs.add((parent.rstrip('/') + '/').replace('\\', '/'))
+                                        new_parent = posixpath.dirname(parent)
+                                        if new_parent == parent:
+                                            break
+                                        parent = new_parent
+                    except rarfile.RarCannotExec:
+                        return make_response(jsonify({"error": "RAR extraction not available"}), 500)
+            elif arc_type == 'tar':
+                with tarfile.open(archive_path, 'r') as tf:
+                    for info in tf.getmembers():
+                        name = _norm_arc_path(_entry_name(info))
+                        if not name.startswith(prefix):
+                            continue
+                        rel_sub = name[len(prefix):]
+                        if not rel_sub:
+                            continue
+                        rel_sub = _sanitize_rel_path(rel_sub)
+                        target_rel = posixpath.join(final_rel.rstrip('/'), rel_sub)
+                        target_path = _user_file_path(target_rel)
+                        if info.isdir():
+                            os.makedirs(target_path, exist_ok=True)
+                            created_dirs.add((target_rel.rstrip('/') + '/').replace('\\', '/'))
+                        else:
+                            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                            src = tf.extractfile(info)
+                            if src:
+                                try:
+                                    with open(target_path, 'wb') as out:
+                                        shutil.copyfileobj(src, out)
+                                    written_files.append(target_rel.replace('\\', '/'))
+                                except Exception as e:
+                                    print(f"[WARN] tar extract skip: {target_rel} - {e}")
+                                parent = posixpath.dirname(target_rel)
+                                while parent and parent.startswith(final_rel.rstrip('/')):
+                                    created_dirs.add((parent.rstrip('/') + '/').replace('\\', '/'))
+                                    new_parent = posixpath.dirname(parent)
+                                    if new_parent == parent:
+                                        break
+                                    parent = new_parent
+        else:
+            if arc_type == 'zip':
+                with zipfile.ZipFile(archive_path, 'r') as zf:
+                    try:
+                        with zf.open(norm_sub, 'r') as src, open(final_path, 'wb') as out:
+                            shutil.copyfileobj(src, out)
+                    except Exception as e:
+                        return make_response(jsonify({"error": f"Failed to extract file: {e}"}), 500)
+                written_files.append(final_rel.replace('\\', '/'))
+            elif arc_type == 'rar':
+                try:
+                    with rarfile.RarFile(archive_path, 'r') as rf:
+                        try:
+                            with rf.open(norm_sub) as src, open(final_path, 'wb') as out:
+                                shutil.copyfileobj(src, out)
+                        except Exception as e:
+                            fb = _extract_rar_external(archive_path, norm_sub)
+                            if fb:
+                                with open(final_path, 'wb') as out:
+                                    out.write(fb)
+                            else:
+                                return make_response(jsonify({"error": f"Failed to extract file: {e}"}), 500)
+                    written_files.append(final_rel.replace('\\', '/'))
+                except rarfile.RarCannotExec:
+                    fb = _extract_rar_external(archive_path, norm_sub)
+                    if fb:
+                        with open(final_path, 'wb') as out:
+                            out.write(fb)
+                        written_files.append(final_rel.replace('\\', '/'))
+                    else:
+                        return make_response(jsonify({"error": "RAR extraction not available"}), 500)
+            elif arc_type == 'tar':
+                with tarfile.open(archive_path, 'r') as tf:
+                    mem = tf.getmember(norm_sub)
+                    src = tf.extractfile(mem)
+                    if not src:
+                        return make_response(jsonify({"error": "Not found in archive"}), 404)
+                    try:
+                        with open(final_path, 'wb') as out:
+                            shutil.copyfileobj(src, out)
+                    except Exception as e:
+                        return make_response(jsonify({"error": f"Failed to extract file: {e}"}), 500)
+                written_files.append(final_rel.replace('\\', '/'))
+
+        login = request.cookies.get('login')
+        files = Accounts[login]["files"]
+        if is_dir:
+            folder_key = final_rel.rstrip('/') + '/'
+            if not any((x.get('file') == folder_key) for x in files):
+                files.append({"file": folder_key, "type": "Folder", "size": '-', "last_change": now, "position": None})
+            if 'bulk_ok' in locals() and bulk_ok:
+                _record_tree(login, final_rel.rstrip('/') + '/', now)
+            else:
+                for d in sorted(created_dirs):
+                    if not any((x.get('file') == d) for x in files):
+                        files.append({"file": d, "type": "Folder", "size": '-', "last_change": now, "position": None})
+                for rel in written_files:
+                    try:
+                        file_size = getFileSize(_user_file_path(rel))
+                    except Exception:
+                        file_size = '-'
+                    ext = rel.rsplit('.', 1)[-1].lower() if '.' in rel else ''
+                    ftype = file_types.get(ext, 'Unknown')
+                    existing = next((x for x in files if x.get('file') == rel), None)
+                    if existing:
+                        existing['size'] = file_size
+                        existing['last_change'] = now
+                        if '/' in rel:
+                            existing['position'] = None
+                    else:
+                        files.append({"file": rel, "type": ftype, "size": file_size, "last_change": now, "position": None})
+        else:
+            rel = final_rel
+            try:
+                file_size = getFileSize(_user_file_path(rel))
+            except Exception:
+                file_size = '-'
+            ext = rel.rsplit('.', 1)[-1].lower() if '.' in rel else ''
+            ftype = file_types.get(ext, 'Unknown')
+            existing = next((x for x in files if x.get('file') == rel), None)
+            if existing:
+                existing['size'] = file_size
+                existing['last_change'] = now
+                if '/' in rel:
+                    existing['position'] = None
+            else:
+                files.append({"file": rel, "type": ftype, "size": file_size, "last_change": now, "position": None})
+
+        updateJson()
+        return make_response(jsonify({"status": "Extracted", "file": (final_rel if is_dir else final_rel)}), 200)
+    except Exception as e:
+        print(f"[ERR] files/archive/extract - {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return make_response(jsonify({"error": "Failed to extract"}), 500)
