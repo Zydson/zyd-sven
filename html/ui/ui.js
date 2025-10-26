@@ -8,6 +8,7 @@ globalData["extensions"] = {
   "Archive": "archive.png",
   "Video": "video.png",
   "Audio": "video.png",
+  "Folder": "folder.png",
 };
 
 globalData["windows"] = {
@@ -57,7 +58,6 @@ if (tempData != null) {
       setupSelectionRectangle();
     }
   } catch (e) {
-    console.error("Failed to load files and positions:", e);
     const tempFilesEl = document.getElementById("temp_files");
     if (tempFilesEl) {
       loadFiles(tempFilesEl.getAttribute("data-files").replaceAll("'", '"'));
@@ -102,7 +102,6 @@ async function saveFilePositions(specificFiles = null) {
     
     await post("files/save-positions", { positions: positionsToSave });
   } catch (e) {
-    console.error("Failed to save file positions:", e);
   }
 }
 function setWindowSize(kind, key, width, height) {
@@ -136,6 +135,17 @@ function setWindowPosition(kind, key, x, y) {
 
 function getGridPosition(fileName) {
   if (globalData["filePositions"][fileName]) {
+    return globalData["filePositions"][fileName];
+  }
+  const noSlash = fileName.replace(/\/$/, '');
+  if (noSlash !== fileName && globalData["filePositions"][noSlash]) {
+    globalData["filePositions"][fileName] = globalData["filePositions"][noSlash];
+    delete globalData["filePositions"][noSlash];
+    return globalData["filePositions"][fileName];
+  }
+  const withSlash = fileName.endsWith('/') ? fileName : (fileName + '/');
+  if (globalData["filePositions"][withSlash]) {
+    globalData["filePositions"][fileName] = globalData["filePositions"][withSlash];
     return globalData["filePositions"][fileName];
   }
   return findNextFreeGridSlot();
@@ -256,6 +266,45 @@ function clearSelection() {
   });
 }
 
+function createEditableInput(span, initialValue = '', selectAll = false) {
+  const spanRect = span.getBoundingClientRect();
+  const spanStyles = window.getComputedStyle(span);
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = initialValue;
+  input.style.width = spanRect.width + 'px';
+  input.style.height = spanRect.height + 'px';
+  input.style.boxSizing = 'border-box';
+  input.style.background = 'rgba(0,0,0,0.2)';
+  input.style.color = 'inherit';
+  input.style.border = 'none';
+  input.style.outline = '1px solid rgba(255,255,255,0.3)';
+  input.style.borderRadius = '3px';
+  input.style.padding = spanStyles.padding || '0';
+  input.style.margin = spanStyles.margin || '0';
+  input.style.fontSize = spanStyles.fontSize || 'inherit';
+  input.style.fontFamily = spanStyles.fontFamily || 'inherit';
+  input.style.lineHeight = spanStyles.lineHeight || 'inherit';
+  input.style.textAlign = 'center';
+  input.style.display = spanStyles.display || 'inline-block';
+  input.style.verticalAlign = spanStyles.verticalAlign || 'baseline';
+  
+  span.replaceWith(input);
+  
+  setTimeout(() => { 
+    try { 
+      input.focus(); 
+      if (selectAll && initialValue) {
+        const lastDot = initialValue.lastIndexOf('.');
+        const baseLen = lastDot > 0 ? lastDot : initialValue.length;
+        input.setSelectionRange(0, baseLen);
+      }
+    } catch {} 
+  }, 10);
+  
+  return input;
+}
+
 function toggleFileSelection(fileName, ctrlKey) {
   if (ctrlKey) {
     if (globalData["selectedFiles"].has(fileName)) {
@@ -304,6 +353,7 @@ function setupFileDragging(fileElement) {
   
   const onMouseDown = function(e) {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.target.closest('context')) return;
     
     if (e.button !== 0) return;
     
@@ -410,6 +460,103 @@ function setupFileDragging(fileElement) {
     });
     
     if (hasMoved) {
+      draggedFiles.forEach(df => df.element.style.display = 'none');
+      let elementAtPoint = document.elementFromPoint(e.clientX, e.clientY);
+      draggedFiles.forEach(df => df.element.style.display = '');
+
+      const draggedSet = new Set(draggedFiles.map(df => df.originalFileName));
+      let folderEl = elementAtPoint ? elementAtPoint.closest('file[extension="Folder"]') : null;
+      const inWin = elementAtPoint && elementAtPoint.closest('.winbox');
+      if (folderEl && draggedSet.has(folderEl.getAttribute('data-name') || '')) {
+        folderEl = null;
+      }
+      if (!folderEl && !inWin) {
+        const folders = Array.from(document.querySelectorAll('file[extension="Folder"]'));
+        const expand = 10;
+        for (const f of folders) {
+          const id = f.getAttribute('data-name') || '';
+          if (draggedSet.has(id)) continue;
+          const r = f.getBoundingClientRect();
+          if (e.clientX >= r.left - expand && e.clientX <= r.right + expand && e.clientY >= r.top - expand && e.clientY <= r.bottom + expand) {
+            folderEl = f; break;
+          }
+        }
+      }
+      if (folderEl && !inWin) {
+        const folderId = folderEl.getAttribute('data-name');
+        const folderName = folderId.replace(/\/$/, '');
+        const moveCandidates = draggedFiles.filter(df => {
+          const orig = df.originalFileName || '';
+          if (!orig) return false;
+          if (orig.replace(/\/$/, '').includes('/')) return false;
+          if (orig.endsWith('/') && folderId.startsWith(orig)) return false;
+          if (orig === folderId) return false;
+          return true;
+        });
+
+        if (moveCandidates.length > 0) {
+          const toRemoveFromDesktop = [];
+          (async () => {
+            for (const df of moveCandidates) {
+              const orig = df.originalFileName;
+              const base = orig.replace(/\/$/, '').split('/').pop();
+              const newPath = `${folderName}/${base}` + (orig.endsWith('/') ? '/' : '');
+              const resp = await post('files/move', { old: orig, new: newPath });
+              try { JSON.parse(resp); } catch {}
+              document.getElementById('F' + orig)?.remove();
+              delete globalData['filePositions'][orig];
+              toRemoveFromDesktop.push(orig);
+            }
+            if (toRemoveFromDesktop.length) await saveFilePositions([]);
+            try {
+              document.querySelectorAll('.folder-window').forEach(win => {
+                const p = (win.dataset && win.dataset.path) ? win.dataset.path.replace(/\/$/, '') : '';
+                if (p === folderName) {
+                  win.dispatchEvent(new CustomEvent('folder:refresh', { bubbles: true, detail: { path: folderName } }));
+                }
+              });
+            } catch {}
+          })();
+
+          isDragging = false;
+          draggedFiles.forEach(df => { df.element.style.zIndex = ''; df.element.style.opacity = ''; });
+          draggedFiles = [];
+          return;
+        }
+      }
+      if (inWin) {
+        const folderWin = elementAtPoint && elementAtPoint.closest('.folder-window');
+        if (folderWin) {
+          const targetPath = (folderWin.dataset && folderWin.dataset.path) ? folderWin.dataset.path.replace(/\/$/, '') : '';
+          const toRemoveFromDesktop = [];
+          (async () => {
+            for (const df of draggedFiles) {
+              const orig = df.originalFileName;
+              if (!orig) continue;
+              if (orig.replace(/\/$/, '').includes('/')) continue;
+              const base = orig.replace(/\/$/, '').split('/').pop();
+              const newPath = targetPath ? `${targetPath}/${base}${orig.endsWith('/') ? '/' : ''}` : `${base}${orig.endsWith('/') ? '/' : ''}`;
+              try {
+                const resp = await post('files/move', { old: orig, new: newPath });
+                try { JSON.parse(resp); } catch {}
+              } catch (err) { }
+              document.getElementById('F' + orig)?.remove();
+              delete globalData['filePositions'][orig];
+              toRemoveFromDesktop.push(orig);
+            }
+            if (toRemoveFromDesktop.length) await saveFilePositions([]);
+            try {
+              folderWin.dispatchEvent(new CustomEvent('folder:refresh', { bubbles: true, detail: { path: targetPath } }));
+            } catch {}
+          })();
+
+          isDragging = false;
+          draggedFiles.forEach(df => { df.element.style.zIndex = ''; df.element.style.opacity = ''; });
+          draggedFiles = [];
+          return;
+        }
+      }
+
       const changedFiles = [];
       draggedFiles.forEach(df => {
         const currentLeft = parseInt(df.element.style.left) || 0;
@@ -471,7 +618,7 @@ function getWindowData(name,key) {
 }
 
 async function get(q) {
-  const response = await fetch(`${window.location.origin}/${q}`);
+  const response = await fetch(`${window.location.origin}/${q}`, { credentials: 'include' });
   var text = await response.text();
   if (response.status === 500) {
     text = ""
@@ -500,7 +647,8 @@ async function post(q,d) {
   const response = await fetch(`${window.location.origin}/${q}`, { 
       method: 'POST',
       body: isJson ? JSON.stringify(d) : d,
-      headers: headers
+      headers: headers,
+      credentials: 'include'
   });
   const text = await response.text();
 
@@ -526,15 +674,30 @@ function menu() {
 function loadFiles(files) {
   const items = JSON.parse(files), container = document.getElementById("Files"), frag = document.createDocumentFragment();
   for (let i = 0; i < items.length; i++) {
-    const d = items[i], el = document.createElement("file"), lab = computeDisplayNames(d.file), ic = globalData["extensions"][d.type];
+    const d = items[i], el = document.createElement("file"), ic = globalData["extensions"][d.type];
+    const normalized = (d.file || '').replace(/\/$/, '');
+    if (normalized.includes('/')) continue;
+
     el.setAttribute("id", "F" + d.file);
     el.setAttribute("data-name", d.file);
     el.setAttribute("extension", d.type);
     el.setAttribute("draggable", "true");
+
+    let labelHtml, tooltipHtml;
+    if (d.type === 'Folder') {
+      const disp = (d.file || '').replace(/\/$/, '');
+      labelHtml = `<span extension="${d.type}" data-name="${d.file}">${disp}</span>`;
+      tooltipHtml = `<div extension="${d.type}" data-name="${d.file}" class="tooltip">Name: ${disp}<br>Type: Folder<br>Size: -<br>Changed: ${d.last_change || '-'}</div>`;
+    } else {
+      const lab = computeDisplayNames(d.file);
+      labelHtml = `<span extension="${d.type}" data-name="${d.file}">${lab.name}</span>`;
+      tooltipHtml = `<div extension="${d.type}" data-name="${d.file}" class="tooltip">Name: ${lab.nameL}<br>Type: ${d.type}<br>Size: ${d.size}<br>Changed: ${d.last_change}</div>`;
+    }
+
     el.innerHTML = `
       <img extension="${d.type}" data-name="${d.file}" src="/static/icons/${ic}">
-      <span extension="${d.type}" data-name="${d.file}">${lab.name}</span>
-      <div extension="${d.type}" data-name="${d.file}" class="tooltip">Name: ${lab.nameL}<br>Type: ${d.type}<br>Size: ${d.size}<br>Changed: ${d.last_change}</div>
+      ${labelHtml}
+      ${tooltipHtml}
     `;
     
     const pos = getGridPosition(d.file);
@@ -703,12 +866,26 @@ document.addEventListener("contextmenu", (event)=>{
     const isMultiSelected = globalData["selectedFiles"].size > 1;
     const removeLabel = isMultiSelected ? `Remove (${globalData["selectedFiles"].size} files)` : 'Remove';
     const downloadLabel = isMultiSelected ? `Download (${globalData["selectedFiles"].size} files)` : 'Download';
-    
+
+    let hasFolderSelected = false;
+    if (isMultiSelected) {
+      try {
+        for (const fname of globalData["selectedFiles"]) {
+          const el = document.querySelector(`file[data-name="${fname}"]`);
+          if (el && el.getAttribute('extension') === 'Folder') { hasFolderSelected = true; break; }
+        }
+      } catch {}
+    } else {
+      hasFolderSelected = (extension === 'Folder');
+    }
+
     let menuHTML = '';
     if (!isMultiSelected) {
         menuHTML += `<button onclick='Fopen("${id}", "${extension}")'>Open</button>`;
     }
-    menuHTML += `<button onclick='${isMultiSelected ? "FdownloadMulti()" : `Fdownload("${id}")` }'>${downloadLabel}</button>`;
+    if (!hasFolderSelected) {
+      menuHTML += `<button onclick='${isMultiSelected ? "FdownloadMulti()" : `Fdownload("${id}")` }'>${downloadLabel}</button>`;
+    }
     if (!isMultiSelected) {
         menuHTML += `<button onclick='Frename("${id}")'>Rename</button>`;
     }
@@ -730,11 +907,12 @@ document.addEventListener("contextmenu", (event)=>{
     globalData["contextClickPosition"] = { x: clickX, y: clickY };
     
     var e = document.createElement("context");
-    e.innerHTML = `
-        <button class="context-create-btn">Create file</button>
-        <button onclick='document.getElementById("file_upload").click()'>Upload</button>
-        <button onclick='Frefresh()'>Refresh</button>
-    `;
+  e.innerHTML = `
+    <button class="context-create-btn">Create file</button>
+    <button class="context-create-folder-btn">Create folder</button>
+    <button onclick='document.getElementById("file_upload").click()'>Upload</button>
+    <button onclick='Frefresh()'>Refresh</button>
+  `;
     e.style.position = "absolute";
     e.style.left = event.clientX + "px";
     e.style.top = event.clientY + "px";
@@ -742,6 +920,9 @@ document.addEventListener("contextmenu", (event)=>{
     
     e.querySelector('.context-create-btn').addEventListener('click', function() {
       Fcreate();
+    });
+    e.querySelector('.context-create-folder-btn').addEventListener('click', function() {
+      FcreateFolder();
     });
   };
 });
@@ -831,6 +1012,8 @@ async function Fopen(file, extension, key, options) {
     openVideo(isFromArchive ? url : file, extension.toLowerCase(), key, fileName);
   } else if (extension == "Archive") {
     openArchive(file,key);
+  } else if (extension == "Folder") {
+    openFolder(file, key);
   } else {
     prompt("This file type is not supported","Error","Ok");
   }
@@ -850,7 +1033,7 @@ async function Fdownload(file) {
 
     const link = document.createElement('a');
     link.href = url;
-    link.download = fname;
+    link.download = fname.split('/').pop() || fname;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -870,7 +1053,7 @@ async function FdownloadMulti() {
 
     const link = document.createElement('a');
     link.href = url;
-    link.download = fname;
+    link.download = fname.split('/').pop() || fname;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -881,23 +1064,26 @@ async function FdownloadMulti() {
   }
 };
 
-async function Fcreate() {
+async function createNewItem(type) {
   hideContext();
   
-  const tempName = `new_file_${Date.now()}`;
-  const tempType = "Unknown";
+  const tempName = `new_${type}_${Date.now()}`;
+  const tempType = type === 'folder' ? 'Folder' : 'Unknown';
+  const displayName = type === 'folder' ? 'new_folder' : 'new_file';
+  const sizeText = type === 'folder' ? '-' : '0 B';
   
   const el = document.createElement("file");
   el.setAttribute("id", "F" + tempName);
   el.setAttribute("data-name", tempName);
   el.setAttribute("extension", tempType);
   el.setAttribute("draggable", "true");
+  el.setAttribute("data-temp-new", "1");
   
   const ic = globalData["extensions"][tempType];
   el.innerHTML = `
     <img extension="${tempType}" data-name="${tempName}" src="/static/icons/${ic}">
-    <span extension="${tempType}" data-name="${tempName}">new_file</span>
-    <div extension="${tempType}" data-name="${tempName}" class="tooltip">Name: new_file<br>Type: ${tempType}<br>Size: 0 B<br>Changed: -</div>
+    <span extension="${tempType}" data-name="${tempName}">${displayName}</span>
+    <div extension="${tempType}" data-name="${tempName}" class="tooltip">Name: ${displayName}<br>Type: ${tempType}<br>Size: ${sizeText}<br>Changed: -</div>
   `;
   
   let pos;
@@ -920,31 +1106,7 @@ async function Fcreate() {
   const img = el.querySelector('img[extension][data-name]');
   const tooltip = el.querySelector('div.tooltip');
   
-  const spanRect = span.getBoundingClientRect();
-  const spanStyles = window.getComputedStyle(span);
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.value = '';
-  input.style.width = spanRect.width + 'px';
-  input.style.height = spanRect.height + 'px';
-  input.style.boxSizing = 'border-box';
-  input.style.background = 'rgba(0,0,0,0.2)';
-  input.style.color = 'inherit';
-  input.style.border = 'none';
-  input.style.outline = '1px solid rgba(255,255,255,0.3)';
-  input.style.borderRadius = '3px';
-  input.style.padding = spanStyles.padding || '0';
-  input.style.margin = spanStyles.margin || '0';
-  input.style.fontSize = spanStyles.fontSize || 'inherit';
-  input.style.fontFamily = spanStyles.fontFamily || 'inherit';
-  input.style.lineHeight = spanStyles.lineHeight || 'inherit';
-  input.style.textAlign = 'center';
-  input.style.display = spanStyles.display || 'inline-block';
-  input.style.verticalAlign = spanStyles.verticalAlign || 'baseline';
-  
-  span.replaceWith(input);
-  
-  setTimeout(() => { try { input.focus(); } catch {} }, 10);
+  const input = createEditableInput(span);
   
   let finished = false;
   
@@ -960,6 +1122,7 @@ async function Fcreate() {
     el.id = 'F' + newName;
     el.setAttribute('data-name', newName);
     el.setAttribute('extension', newType);
+    el.removeAttribute('data-temp-new');
     
     if (img) {
       img.setAttribute('data-name', newName);
@@ -968,7 +1131,8 @@ async function Fcreate() {
       img.src = `/static/icons/${icon}`;
     }
     
-    const labels = computeDisplayNames(newName);
+    const displayNameFinal = (newType === 'Folder') ? newName.replace(/\/$/, '') : newName;
+    const labels = computeDisplayNames(displayNameFinal);
     const newSpan = document.createElement('span');
     newSpan.setAttribute('extension', newType);
     newSpan.setAttribute('data-name', newName);
@@ -978,7 +1142,7 @@ async function Fcreate() {
     if (tooltip) {
       tooltip.setAttribute('data-name', newName);
       tooltip.setAttribute('extension', newType);
-      tooltip.innerHTML = `Name: ${labels.nameL}<br>Type: ${newType}<br>Size: 0 B<br>Changed: -`;
+      tooltip.innerHTML = `Name: ${labels.nameL}<br>Type: ${newType}<br>Size: ${newType === 'Folder' ? '-' : '0 B'}<br>Changed: -`;
     }
     
     if (globalData["filePositions"][tempName]) {
@@ -999,39 +1163,48 @@ async function Fcreate() {
     }
     
     if (newName.includes('/') || newName.includes('\\') || newName.includes(':') || newName.startsWith('.') || newName.includes(';') || newName.includes('*') || newName.includes('?') || newName.includes('"') || newName.includes('<') || newName.includes('>') || newName.includes('|') || newName.includes("'")) {
-      prompt('Name cannot contain illegal characters', 'Create file', 'Ok');
+      prompt(`Name cannot contain illegal characters`, `Create ${type}`, 'Ok');
       cleanup();
       return;
     }
     
     if (document.getElementById("F" + newName)) {
-      prompt('File with that name already exists', 'Create file', 'Ok');
+      prompt(`${type.charAt(0).toUpperCase() + type.slice(1)} with that name already exists`, `Create ${type}`, 'Ok');
       cleanup();
       return;
     }
     
-    const resp = await post('files/upload', { file: newName, data: '' });
+    let resp;
+    if (type === 'file') {
+      resp = await post('files/upload', { file: newName, data: '' });
+    } else {
+      resp = await post('files/folders/create', { path: newName });
+    }
+    
     try {
       const data = JSON.parse(resp);
       if (data && data.file) {
         finished = true;
-        const newType = getTypeForFilename(newName);
-        applyDomUpdate(newName, newType);
+        const finalName = type === 'folder' ? (data.file.endsWith('/') ? data.file : data.file + '/') : data.file;
+        const newType = type === 'folder' ? 'Folder' : getTypeForFilename(finalName);
+        applyDomUpdate(finalName, newType);
         
         if (tooltip) {
-          tooltip.innerHTML = `Name: ${computeDisplayNames(newName).nameL}<br>Type: ${data.type || newType}<br>Size: ${data.size || '0 B'}<br>Changed: ${data.last_change || '-'}`;
+          const disp = type === 'folder' ? finalName.replace(/\/$/, '') : finalName;
+          tooltip.innerHTML = `Name: ${computeDisplayNames(disp).nameL}<br>Type: ${newType}<br>Size: ${type === 'folder' ? '-' : (data.size || '0 B')}<br>Changed: ${data.last_change || '-'}`;
         }
         return;
       }
     } catch {}
     
-    if (resp === 'Updated' || resp.includes('file')) {
+    if (resp === 'Updated' || resp.includes(type) || resp.includes('created')) {
       finished = true;
-      const newType = getTypeForFilename(newName);
-      applyDomUpdate(newName, newType);
+      const finalName = type === 'folder' ? (newName.endsWith('/') ? newName : newName + '/') : newName;
+      const newType = type === 'folder' ? 'Folder' : getTypeForFilename(finalName);
+      applyDomUpdate(finalName, newType);
       return;
     } else {
-      await prompt(resp || 'Failed to create file', 'Create file', 'Ok');
+      await prompt(resp || `Failed to create ${type}`, `Create ${type}`, 'Ok');
       setTimeout(() => { try { input.focus(); input.select(); } catch {} }, 10);
     }
   };
@@ -1057,7 +1230,17 @@ async function Fcreate() {
     }
   };
   document.addEventListener('mousedown', outsideClickHandler, true);
-};
+}
+
+async function Fcreate() {
+  await createNewItem('file');
+}
+
+async function FcreateFolder() {
+  await createNewItem('folder');
+}
+
+
 
 async function Fremove(file) {
   const filesToRemove = globalData["selectedFiles"].size > 0 ? Array.from(globalData["selectedFiles"]) : [file];
@@ -1067,6 +1250,9 @@ async function Fremove(file) {
       document.getElementById("F"+fname)?.remove();
       delete globalData["filePositions"][fname];
       globalData["selectedFiles"].delete(fname);
+      if (typeof fname === 'string' && fname.endsWith('/')) {
+        try { closeFolderWindowsForPath(fname); } catch {}
+      }
     }
   }
   saveFilePositions();
@@ -1081,6 +1267,9 @@ async function FremoveMulti() {
       document.getElementById("F"+fname)?.remove();
       delete globalData["filePositions"][fname];
       globalData["selectedFiles"].delete(fname);
+      if (typeof fname === 'string' && fname.endsWith('/')) {
+        try { closeFolderWindowsForPath(fname); } catch {}
+      }
     }
   }
   saveFilePositions();
@@ -1095,6 +1284,41 @@ function hideContext() {
     };
   }catch{};
 };
+
+function closeFolderWindowsForPath(deletedPath) {
+  if (!deletedPath) return;
+  const base = deletedPath.replace(/\/$/, '');
+  if (!base) return;
+  document.querySelectorAll('.folder-window').forEach(el => {
+    try {
+      const cur = (el.dataset && el.dataset.path) ? el.dataset.path : '';
+      if (!cur) return;
+      if (cur === base || cur.startsWith(base + '/')) {
+        const key = (el.id && el.id.startsWith('folder-win-')) ? el.id.slice('folder-win-'.length) : null;
+        if (key && globalData["openedWindows"][key]) {
+          delete globalData["openedWindows"][key];
+        }
+        const winEl = el.closest('.winbox');
+        if (winEl) {
+          winEl.remove();
+        } else {
+          el.remove();
+        }
+      }
+    } catch {}
+  });
+  try {
+    for (const key in globalData["openedWindows"]) {
+      const info = globalData["openedWindows"][key];
+      if (!info || info.extension !== 'Folder') continue;
+      const f = (info.file || '').replace(/\/$/, '');
+      if (f === base || f.startsWith(base + '/')) {
+        delete globalData["openedWindows"][key];
+      }
+    }
+  } catch {}
+  try { saveOpenedWindowsState(); } catch {}
+}
 
 function getTypeForFilename(filename) {
   const ext = (filename.split('.').pop() || '').toLowerCase();
@@ -1137,6 +1361,135 @@ function getTypeForFilename(filename) {
   if (audio.includes(ext)) return 'Audio';
   if (archive.includes(ext)) return 'Archive';
   return 'Unknown';
+}
+
+
+
+async function FrenameInPath(fullPath, key) {
+  let e = document.getElementById("folder-win-" + key);
+  if (!e) {
+    const allFolders = document.querySelectorAll('.folder-window');
+    for (const folderEl of allFolders) {
+      if (folderEl.dataset.path === fullPath.split('/').slice(0, -1).join('/')) {
+        e = folderEl;
+        break;
+      }
+    }
+    if (!e) {
+      return;
+    }
+  }
+  try {
+    hideContext();
+    let row = e.querySelector(`tr[data-path="${fullPath}"]`);
+    if (!row) {
+      const target = (fullPath || '').replace(/\/$/, '');
+      row = Array.from(e.querySelectorAll('.archive-table tbody tr')).find(r => {
+        const p = (r.dataset.path || r.dataset.name || '').replace(/\/$/, '');
+        return p === target;
+      }) || null;
+    }
+    if (!row) return;
+    const td = row.querySelector('td');
+    if (!td) return;
+    const originalHTML = td.innerHTML;
+    const label = fullPath.endsWith('/') ? fullPath.slice(0, -1).split('/').pop() : (fullPath.split('/').pop() || fullPath);
+    const iconMatch = originalHTML.match(/^(<img[^>]*>)/);
+    const iconHTML = iconMatch ? iconMatch[1] : '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = label;
+    input.style.display = 'inline-block';
+    input.style.width = 'auto';
+    input.style.minWidth = '50px';
+    input.style.maxWidth = '200px';
+    input.style.boxSizing = 'border-box';
+    input.style.background = 'rgba(0,0,0,0.2)';
+    input.style.color = 'inherit';
+    input.style.border = 'none';
+    input.style.outline = '1px solid rgba(255,255,255,0.3)';
+    input.style.borderRadius = '3px';
+    input.style.padding = '1px 2px';
+    input.style.fontSize = 'inherit';
+    input.style.fontFamily = 'inherit';
+    input.style.verticalAlign = 'middle';
+    td.innerHTML = iconHTML;
+    td.appendChild(input);
+    input.addEventListener('mousedown', (ev) => ev.stopPropagation());
+    setTimeout(() => { try { input.focus(); input.select(); } catch {} }, 10);
+
+    const handleGlobalClick = (ev) => {
+      if (ev.target !== input && !input.contains(ev.target)) {
+        commit(false);
+      }
+    };
+    document.addEventListener('mousedown', handleGlobalClick);
+
+    let finished = false;
+    const restore = () => {
+      if (finished) return;
+      finished = true;
+      document.removeEventListener('mousedown', handleGlobalClick);
+      td.innerHTML = originalHTML;
+    };
+
+    const commit = async (cancel) => {
+      if (finished) return;
+      if (cancel) { restore(); return; }
+      let newName = (input.value || '').trim();
+      if (!newName) {
+        restore();
+        prompt('Name cannot be empty', 'Rename', 'Ok');
+        return;
+      }
+      if (newName === label) { restore(); return; }
+      if (label.indexOf('.') !== -1 && newName.indexOf('.') === -1) {
+        newName += label.substring(label.lastIndexOf('.'));
+      }
+      if (newName.includes('/') || newName.includes('\\') || newName.includes(':') || newName.startsWith('.') || newName.includes(';') || newName.includes('*') || newName.includes('?') || newName.includes('"') || newName.includes('<') || newName.includes('>') || newName.includes('|') || newName.includes("'")) {
+        restore();
+        prompt('Name cannot contain illegal characters', 'Rename', 'Ok');
+        return;
+      }
+  const baseFull = fullPath.replace(/\/$/, '');
+  const dir = baseFull.includes('/') ? baseFull.split('/').slice(0, -1).join('/') : '';
+  let newPath = dir ? `${dir}/${newName}` : newName;
+      if (fullPath.endsWith('/')) newPath += '/';
+      const resp = await post('files/move', { old: fullPath, new: newPath });
+      try { const j = JSON.parse(resp); if (j && j.error) { restore(); prompt(j.error, 'Rename', 'Ok'); return; } } catch {}
+      finished = true;
+      try { document.removeEventListener('mousedown', handleGlobalClick); } catch {}
+      row.dataset.path = newPath;
+      e.dispatchEvent(new CustomEvent('folder:refresh', { bubbles: true }));
+      await Frefresh();
+    };
+
+    input.addEventListener('keydown', async (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        await commit(false);
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        commit(true);
+      }
+    });
+    input.addEventListener('blur', () => { commit(false); });
+  } catch (e) { }
+}
+
+async function FremoveInPath(fullPath, key) {
+  try {
+    hideContext();
+    const resp = await post('files/remove', { file: fullPath });
+    try { const j = JSON.parse(resp); if (j && j.error) { await prompt(j.error, 'Remove', 'Ok'); return; } } catch {}
+    if (typeof fullPath === 'string' && fullPath.endsWith('/')) {
+      try { closeFolderWindowsForPath(fullPath); } catch {}
+    }
+    await Frefresh();
+    const e = document.getElementById("folder-win-" + key);
+    if (e) e.dispatchEvent(new CustomEvent('folder:refresh', { bubbles: true }));
+    return resp;
+  } catch (e) { }
 }
 
 function computeDisplayNames(fullName) {
@@ -1214,42 +1567,29 @@ async function Frename(oldName) {
     const tooltip = el.querySelector('div.tooltip');
     if (!span) return;
 
-    const spanRect = span.getBoundingClientRect();
-    const spanStyles = window.getComputedStyle(span);
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.value = oldName;
-    input.style.width = spanRect.width + 'px';
-    input.style.height = spanRect.height + 'px';
-    input.style.boxSizing = 'border-box';
-    input.style.background = 'rgba(0,0,0,0.2)';
-    input.style.color = 'inherit';
-    input.style.border = 'none';
-    input.style.outline = '1px solid rgba(255,255,255,0.3)';
-    input.style.borderRadius = '3px';
-    input.style.padding = spanStyles.padding || '0';
-    input.style.margin = spanStyles.margin || '0';
-    input.style.fontSize = spanStyles.fontSize || 'inherit';
-    input.style.fontFamily = spanStyles.fontFamily || 'inherit';
-    input.style.lineHeight = spanStyles.lineHeight || 'inherit';
-    input.style.textAlign = 'center';
-    input.style.display = spanStyles.display || 'inline-block';
-    input.style.verticalAlign = spanStyles.verticalAlign || 'baseline';
+  const oldType = el.getAttribute('extension') || '';
+  const initialVal = (oldType === 'Folder') ? (oldName || '').replace(/\/$/, '') : oldName;
+  const input = createEditableInput(span, initialVal, true);
+    input.addEventListener('mousedown', (ev) => ev.stopPropagation());
 
-    span.replaceWith(input);
-
-    const lastDot = oldName.lastIndexOf('.');
-    const baseLen = lastDot > 0 ? lastDot : oldName.length;
-    setTimeout(() => { try { input.focus(); input.setSelectionRange(0, baseLen); } catch {} }, 10);
+    const handleGlobalClick = (ev) => {
+      if (ev.target !== input && !input.contains(ev.target)) {
+        commit(false);
+      }
+    };
+    document.addEventListener('mousedown', handleGlobalClick);
 
     let finished = false;
     const restore = () => {
       if (finished) return;
       finished = true;
+      document.removeEventListener('mousedown', handleGlobalClick);
       const newSpan = document.createElement('span');
       newSpan.setAttribute('extension', el.getAttribute('extension'));
       newSpan.setAttribute('data-name', oldName);
-      const labels = computeDisplayNames(oldName);
+      const isFolder = (oldType === 'Folder');
+      const displayOld = isFolder ? (oldName || '').replace(/\/$/, '') : oldName;
+      const labels = computeDisplayNames(displayOld);
       newSpan.innerText = labels.name;
       input.replaceWith(newSpan);
     };
@@ -1266,7 +1606,8 @@ async function Frename(oldName) {
         img.src = `/static/icons/${icon}`;
       }
 
-      const labels = computeDisplayNames(newName);
+  const displayNameFinal = (newType === 'Folder') ? (newName || '').replace(/\/$/, '') : newName;
+  const labels = computeDisplayNames(displayNameFinal);
       const newSpan = document.createElement('span');
       newSpan.setAttribute('extension', newType);
       newSpan.setAttribute('data-name', newName);
@@ -1313,38 +1654,48 @@ async function Frename(oldName) {
       if (finished) return;
       if (cancel) { restore(); return; }
       let newName = (input.value || '').trim();
-      if (!newName || newName === oldName) { restore(); return; }
+      if (!newName) {
+        restore();
+        prompt('Name cannot be empty', 'Rename', 'Ok');
+        return;
+      }
+      if (newName === oldName) { restore(); return; }
       if (oldName.indexOf('.') !== -1 && newName.indexOf('.') === -1) {
         newName += oldName.substring(oldName.lastIndexOf('.'));
       }
-      if (newName.includes('/') || newName.includes('\\')) {
-        await prompt('Name cannot contain path separators', 'Rename', 'Ok');
-        setTimeout(() => { try { input.focus(); input.select(); } catch {} }, 10);
+      if (newName.includes('/') || newName.includes('\\') || newName.includes(':') || newName.startsWith('.') || newName.includes(';') || newName.includes('*') || newName.includes('?') || newName.includes('"') || newName.includes('<') || newName.includes('>') || newName.includes('|') || newName.includes("'")) {
+        restore();
+        prompt('Name cannot contain illegal characters', 'Rename', 'Ok');
         return;
       }
 
-      const resp = await post('files/rename', { old: oldName, new: newName });
+  const isFolder = (oldType === 'Folder');
+  const newNameAdj = isFolder ? (newName.endsWith('/') ? newName : (newName + '/')) : newName;
+  const resp = await post('files/move', { old: oldName, new: newNameAdj });
       try {
         const data = JSON.parse(resp);
-        if (data && data.status === 'Renamed') {
+        if (data && (data.status === 'Renamed' || data.status === 'Moved')) {
           finished = true;
-          const newType = getTypeForFilename(newName);
-          applyDomUpdate(newName, newType);
+          try { document.removeEventListener('mousedown', handleGlobalClick); } catch {}
+          const newType = isFolder ? 'Folder' : getTypeForFilename(newNameAdj);
+          applyDomUpdate(newNameAdj, newType);
           return;
         } else if (data && data.error) {
-          await prompt(data.error, 'Rename', 'Ok');
-          setTimeout(() => { try { input.focus(); input.select(); } catch {} }, 10);
+          restore();
+          prompt(data.error, 'Rename', 'Ok');
           return;
         }
       } catch {}
-      if (resp === 'Renamed') {
+      if (resp === 'Renamed' || resp === 'Moved') {
         finished = true;
-        const newType = getTypeForFilename(newName);
-        applyDomUpdate(newName, newType);
+        try { document.removeEventListener('mousedown', handleGlobalClick); } catch {}
+        const newType = isFolder ? 'Folder' : getTypeForFilename(newNameAdj);
+        applyDomUpdate(newNameAdj, newType);
         return;
       } else {
-        await prompt(resp || 'Failed to rename', 'Rename', 'Ok');
-        setTimeout(() => { try { input.focus(); input.select(); } catch {} }, 10);
+        restore();
+        prompt(resp || 'Failed to rename', 'Rename', 'Ok');
+        return;
       }
     };
 
@@ -1364,20 +1715,23 @@ async function Frename(oldName) {
 }
 
 document.onkeydown = async function(event) {
-  if (event.ctrlKey && event.keyCode === 83) {
-    const tgt = event.target;
-    if (tgt && tgt.classList && tgt.classList.contains('ace_text-input')) {
-      return;
-    }
+  const { ctrlKey, keyCode, target } = event;
+  const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+  
+  if (ctrlKey && keyCode === 83) {
+    if (target.classList?.contains('ace_text-input')) return;
     event.preventDefault();
     try {
-      if (document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute("id") && document.activeElement.getAttribute("id").indexOf("Text") != -1) {
-        var id = document.activeElement.getAttribute("id").split("Text")[0];
+      const activeEl = document.activeElement;
+      if (activeEl?.id?.includes('Text')) {
+        const id = activeEl.id.split('Text')[0];
         await saveNotepad(id);
-      };
-    } catch {};
-  };
-  if (event.ctrlKey && event.keyCode === 65) {
+      }
+    } catch {}
+    return;
+  }
+  
+  if (ctrlKey && keyCode === 65 && !isInput) {
     event.preventDefault();
     clearSelection();
     document.querySelectorAll('file[data-name]').forEach(fileEl => {
@@ -1385,22 +1739,27 @@ document.onkeydown = async function(event) {
       globalData["selectedFiles"].add(fileName);
       fileEl.classList.add('selected');
     });
-  };
-  if (event.keyCode === 46) {
+    return;
+  }
+  
+  if (keyCode === 46) {
     event.preventDefault();
     if (globalData["selectedFiles"].size > 0) {
       const filesToRemove = Array.from(globalData["selectedFiles"]);
       for (const fname of filesToRemove) {
         await Fremove(fname);
       }
-    } else if (globalData["focused"] != "none") {
+    } else if (globalData["focused"] !== "none") {
       await Fremove(globalData["focused"].getAttribute("data-name"));
     }
-  };
-  if (event.keyCode == 116) {
+    return;
+  }
+  
+  if (keyCode === 116) {
     event.preventDefault();
     await Frefresh();
-  };
+    return;
+  }
 };
 
 
@@ -1931,8 +2290,9 @@ async function openArchive(file, key) {
 
     const windowData = getWindowData("archive", key);
     const title = file;
-    let currentPath = '';
-    let currentFiles = [];
+  let currentPath = '';
+  let currentFiles = [];
+  let selectedRows = new Set();
     let sortColumn = 'name';
     let sortDirection = 'asc';
 
@@ -1952,7 +2312,7 @@ async function openArchive(file, key) {
         renderTable();
     }
 
-    function renderTable() {
+  function renderTable() {
         let sorted = [...currentFiles];
         
         sorted.sort((a, b) => {
@@ -2014,7 +2374,7 @@ async function openArchive(file, key) {
                 const iconName = globalData["extensions"][fileType] || "unknown_.png";
                 icon = `<img src="/static/icons/${iconName}" class="archive-icon" style="width:14px;height:14px;">`;
             }
-            const label = (f.display && f.display.length > 0) ? f.display : (f.name ? f.name.split('/').pop() : '');
+            const label = (f.display && f.display.length > 0) ? f.display : (f.name ? (f.name.endsWith('/') ? f.name.slice(0, -1).split('/').pop() : f.name.split('/').pop()) : '');
             table += `<tr data-path="${f.name}" data-isdir="${f.is_dir}"><td>${icon}${label}</td><td>${f.size}</td><td>${f.modified}</td></tr>`;
         });
         
@@ -2026,16 +2386,32 @@ async function openArchive(file, key) {
             th.onclick = () => sortFiles(th.dataset.column);
         });
 
-        let selectedRow = null;
+        const applySelectionStyling = () => {
+          e.querySelectorAll('.archive-table tbody tr').forEach(r => {
+            const p = r.dataset.path || r.dataset.name;
+            if (!p || p === '..') return;
+            const sel = selectedRows.has(p);
+            r.classList.toggle('selected-once', sel);
+            r.style.background = '';
+            r.querySelectorAll('td').forEach(td => { td.style.background = ''; });
+          });
+        };
+
+        const pathToIsDir = new Map();
+        sorted.forEach(f => { if (f && f.name) pathToIsDir.set(f.name, !!f.is_dir); });
         
     e.querySelectorAll('.archive-table tbody tr').forEach(row => {
-      row.onclick = () => {
-        if (selectedRow) {
-          selectedRow.classList.remove('selected-once');
+      row.addEventListener('click', (ev) => {
+        const p = row.dataset.path || row.dataset.name;
+        if (!p || p === '..') return;
+        if (ev.ctrlKey) {
+          if (selectedRows.has(p)) selectedRows.delete(p); else selectedRows.add(p);
+        } else {
+          selectedRows.clear();
+          selectedRows.add(p);
         }
-        selectedRow = row;
-        row.classList.add('selected-once');
-      };
+        applySelectionStyling();
+      });
 
       row.ondblclick = () => {
         const isDir = row.dataset.isdir === 'true';
@@ -2071,7 +2447,294 @@ async function openArchive(file, key) {
           }
         }
       };
+
+      row.addEventListener('mousedown', (downEvent) => {
+        if (downEvent.button !== 0) return;
+        const internalPath = row.dataset.path;
+        if (!internalPath || internalPath === '..') return;
+
+        let dragging = false;
+        let ghost = null;
+        const startX = downEvent.clientX;
+        const startY = downEvent.clientY;
+        const draggedItems = (function(){
+          const items = [];
+          const active = (selectedRows.size > 0 && selectedRows.has(internalPath)) ? Array.from(selectedRows) : [internalPath];
+          active.forEach(p => {
+            if (p && p !== '..') {
+              const isDir = !!pathToIsDir.get(p);
+              items.push({ path: p, isDir });
+            }
+          });
+          return items;
+        })();
+
+        const updateGhost = (x, y) => {
+          if (!ghost) {
+            ghost = document.createElement('div');
+            ghost.className = 'archive-drag-ghost';
+            ghost.style.position = 'fixed';
+            ghost.style.zIndex = '2000';
+            ghost.style.pointerEvents = 'none';
+            ghost.style.padding = '6px 10px';
+            ghost.style.borderRadius = '6px';
+            ghost.style.background = 'rgba(30,30,30,0.9)';
+            ghost.style.color = '#fff';
+            ghost.style.fontSize = '12px';
+            ghost.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+            const label = draggedItems.length > 1 ? `${draggedItems.length} items` : ((internalPath.split('/').pop() || internalPath));
+            ghost.textContent = `Extract: ${label}`;
+            document.body.appendChild(ghost);
+          }
+          ghost.style.left = (x + 12) + 'px';
+          ghost.style.top = (y + 12) + 'px';
+        };
+
+        const onMouseMove = (mv) => {
+          const dx = Math.abs(mv.clientX - startX);
+          const dy = Math.abs(mv.clientY - startY);
+          if (!dragging && (dx > 8 || dy > 8)) {
+            dragging = true;
+          }
+          if (dragging) {
+            updateGhost(mv.clientX, mv.clientY);
+          }
+        };
+
+        const listFilesRecursively = async (dirPath) => {
+          const results = [];
+          const stack = [dirPath];
+          while (stack.length) {
+            const p = stack.pop();
+            const q = encodeURIComponent(p);
+            try {
+              const resp = await get(`files/archive/list/${file}?path=${q}`);
+              const arr = JSON.parse(resp);
+              for (const item of arr) {
+                if (!item || !item.name) continue;
+                if (item.is_dir) {
+                  stack.push(item.name);
+                } else {
+                  results.push(item.name);
+                }
+              }
+            } catch {}
+          }
+          return results;
+        };
+
+        const ensureFolderTree = async (targetPath) => {
+          const parts = targetPath.replace(/\/$/, '').split('/');
+          let acc = '';
+          for (let i = 0; i < parts.length; i++) {
+            acc += (i === 0 ? parts[i] : ('/' + parts[i]));
+            try { await post('files/folders/create', { path: acc + '/' }); } catch {}
+          }
+        };
+
+        const showBusyOverlay = (message = 'Working…') => {
+          let el = document.getElementById('busyOverlay');
+          if (!el) {
+            el = document.createElement('div');
+            el.id = 'busyOverlay';
+            el.style.position = 'fixed';
+            el.style.inset = '0';
+            el.style.background = 'rgba(0,0,0,0.35)';
+            el.style.zIndex = '99999';
+            el.style.display = 'flex';
+            el.style.alignItems = 'center';
+            el.style.justifyContent = 'center';
+            el.style.backdropFilter = 'blur(2px)';
+            const box = document.createElement('div');
+            box.style.padding = '16px 20px';
+            box.style.borderRadius = '10px';
+            box.style.background = 'rgba(20,20,20,0.9)';
+            box.style.color = '#fff';
+            box.style.font = '14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+            box.style.display = 'flex';
+            box.style.alignItems = 'center';
+            box.style.gap = '10px';
+            const spinner = document.createElement('div');
+            spinner.style.width = '18px';
+            spinner.style.height = '18px';
+            spinner.style.border = '2px solid rgba(255,255,255,0.25)';
+            spinner.style.borderTopColor = '#fff';
+            spinner.style.borderRadius = '50%';
+            spinner.style.animation = 'spin 0.9s linear infinite';
+            const text = document.createElement('div');
+            text.className = 'busyOverlayText';
+            text.textContent = message;
+            box.appendChild(spinner);
+            box.appendChild(text);
+            el.appendChild(box);
+            const style = document.createElement('style');
+            style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+            el.appendChild(style);
+            document.body.appendChild(el);
+          } else {
+            const t = el.querySelector('.busyOverlayText');
+            if (t) t.textContent = message;
+            el.style.display = 'flex';
+          }
+        };
+        const hideBusyOverlay = () => {
+          const el = document.getElementById('busyOverlay');
+          if (el) el.style.display = 'none';
+        };
+
+        const extractToDesktopAt = async (clientX, clientY) => {
+          try {
+            const filesContainer = document.getElementById('Files');
+            if (!filesContainer) return;
+            const containerRect = filesContainer.getBoundingClientRect();
+
+            if (clientX < containerRect.left || clientX > containerRect.right || clientY < containerRect.top || clientY > containerRect.bottom) {
+              return;
+            }
+
+            const elementAtPoint = document.elementFromPoint(clientX, clientY);
+            if (elementAtPoint && elementAtPoint.closest('.winbox')) {
+              return;
+            }
+
+            const dropX = clientX - containerRect.left;
+            const dropY = clientY - containerRect.top;
+
+            const snapped = snapToGrid(dropX, dropY);
+            let offset = 0;
+            const total = draggedItems.length;
+            const isAnyDir = draggedItems.some(i => i.isDir);
+            showBusyOverlay(isAnyDir ? `Extracting ${total} item${total>1?'s':''}…` : 'Copying…');
+            for (const item of draggedItems) {
+              const itemPath = item.path;
+              const baseName = (itemPath.split('/').pop() || 'extracted');
+              const startCol = snapped.col + (offset % 3);
+              const startRow = snapped.row + Math.floor(offset / 3);
+              const targetPos = findNearestFreeSlot(startCol, startRow, baseName + (item.isDir ? '/' : ''));
+              if (item.isDir) {
+                try {
+                  const resp = await post('files/archive/extract', { archive: file, path: itemPath, dest: baseName });
+                  let finalFolder = baseName + '/';
+                  try { const j = JSON.parse(resp); if (j && j.file) finalFolder = j.file.endsWith('/') ? j.file : (j.file + '/'); } catch {}
+                  globalData["filePositions"][finalFolder] = targetPos;
+                  await saveFilePositions([finalFolder]);
+                  await Frefresh();
+                  const el = document.getElementById('F' + finalFolder);
+                  if (el) setFilePosition(el, targetPos.col, targetPos.row);
+                } catch (ex) {
+                }
+              } else {
+                const archiveUrlPart = encodeURIComponent(file);
+                const internalUrlPart = encodeURIComponent(itemPath);
+                const getUrl = `files/archive/get/${archiveUrlPart}?path=${internalUrlPart}`;
+                const resp = await fetch(getUrl);
+                if (!resp.ok) { continue; }
+                const blob = await resp.blob();
+                const fd = new FormData();
+                const uploadFile = new File([blob], baseName, { type: blob.type || 'application/octet-stream' });
+                fd.append('file', uploadFile);
+                let up = await fetch('/files/upload', { method: 'POST', body: fd });
+                let upText = await up.text();
+                globalData["filePositions"][baseName] = targetPos;
+                await saveFilePositions([baseName]);
+                if (upText !== 'Updated') {
+                  loadFiles("[" + upText + "]");
+                } else {
+                  const el = document.getElementById('F' + baseName);
+                  if (el) setFilePosition(el, targetPos.col, targetPos.row);
+                }
+              }
+              offset++;
+            }
+            hideBusyOverlay();
+          } catch (err) {
+            hideBusyOverlay();
+          }
+        };
+
+        const onMouseUp = async (up) => {
+          document.removeEventListener('mousemove', onMouseMove, true);
+          document.removeEventListener('mouseup', onMouseUp, true);
+          if (dragging) {
+            up.preventDefault();
+            up.stopPropagation();
+            await extractToDesktopAt(up.clientX, up.clientY);
+          }
+          if (ghost) {
+            ghost.remove();
+            ghost = null;
+          }
+        };
+
+        document.addEventListener('mousemove', onMouseMove, true);
+        document.addEventListener('mouseup', onMouseUp, true);
+      });
     });
+
+      const content = e.querySelector('.archive-content') || e;
+      if (content) {
+        let selecting = false; let startX = 0; let startY = 0; let box = null; let baseSelection = null; let containerRect = null; let bodyRect = null; let prevPos = '';
+        const onMouseMove = (mv) => {
+          if (!selecting) return;
+          const cx = Math.min(Math.max(mv.clientX, containerRect.left), containerRect.right);
+          const cy = Math.min(Math.max(mv.clientY, bodyRect.top), containerRect.bottom);
+          const x1v = Math.min(startX, cx); const y1v = Math.min(startY, cy);
+          const x2v = Math.max(startX, cx); const y2v = Math.max(startY, cy);
+          box.style.left = (x1v - containerRect.left) + 'px';
+          box.style.top = (y1v - containerRect.top) + 'px';
+          box.style.width = (x2v - x1v) + 'px';
+          box.style.height = (y2v - y1v) + 'px';
+          const nextSel = new Set(baseSelection);
+          e.querySelectorAll('.archive-table tbody tr').forEach(r => {
+            const p = r.dataset.path || r.dataset.name;
+            if (!p || p === '..') return;
+            const rr = r.getBoundingClientRect();
+            const intersects = !(rr.right < x1v || rr.left > x2v || rr.bottom < y1v || rr.top > y2v);
+            if (intersects) nextSel.add(p);
+          });
+          selectedRows = nextSel;
+          applySelectionStyling();
+        };
+        const onMouseUp = () => {
+          if (!selecting) return;
+          selecting = false;
+          document.removeEventListener('mousemove', onMouseMove, true);
+          document.removeEventListener('mouseup', onMouseUp, true);
+          if (box) { box.remove(); box = null; }
+          content.style.userSelect = '';
+          e.style.overflow = '';
+          if (prevPos) e.style.position = prevPos;
+        };
+        content.addEventListener('mousedown', (ev) => {
+          if (ev.button !== 0) return;
+          if (ev.target.closest('tr')) return;
+          selecting = true;
+          containerRect = content.getBoundingClientRect();
+          const tbody = e.querySelector('.archive-table tbody');
+          bodyRect = tbody ? tbody.getBoundingClientRect() : containerRect;
+          startX = Math.min(Math.max(ev.clientX, containerRect.left), containerRect.right);
+          startY = Math.min(Math.max(ev.clientY, bodyRect.top), containerRect.bottom);
+          baseSelection = ev.ctrlKey ? new Set(selectedRows) : new Set();
+          if (!ev.ctrlKey) selectedRows.clear();
+          applySelectionStyling();
+          box = document.createElement('div');
+          prevPos = getComputedStyle(e).position;
+          if (prevPos === 'static') e.style.position = 'relative';
+          e.style.overflow = 'hidden';
+          box.style.position = 'absolute';
+          box.style.zIndex = '3';
+          box.style.pointerEvents = 'none';
+          box.style.border = '1px solid rgba(88,153,255,0.9)';
+          box.style.background = 'rgba(88,153,255,0.2)';
+          box.style.left = (startX - containerRect.left) + 'px'; box.style.top = (startY - containerRect.top) + 'px';
+          box.style.width = '0px'; box.style.height = '0px';
+          e.appendChild(box);
+          content.style.userSelect = 'none';
+          ev.preventDefault();
+          document.addEventListener('mousemove', onMouseMove, true);
+          document.addEventListener('mouseup', onMouseUp, true);
+        });
+      }
     }
 
   async function renderPath(path) {
@@ -2153,6 +2816,547 @@ class RepeatToggle extends Button {
 
     this.el().classList.toggle('active', this.isRepeating);
   }
+}
+
+async function openFolder(folderPath, key) {
+  const e = document.createElement('div');
+  e.style.height = '100%';
+  e.style.display = 'flex';
+  e.style.flexDirection = 'column';
+  e.classList.add('folder-window');
+  e.setAttribute("id", "folder-win-" + key);
+
+  const windowData = getWindowData('archive', key);
+  const title = folderPath.replace(/\/$/, '') || 'Folder';
+  let currentPath = folderPath.replace(/\/$/, '');
+  let currentFiles = [];
+  let selectedRows = new Set();
+  e.dataset.path = currentPath;
+
+  if (key == null) {
+    key = (Math.random() + 1).toString(36).substring(7);
+  }
+
+  function renderTable() {
+    let table = `
+      <div class="archive-content">
+        <table class="archive-table">
+          <thead><tr>
+            <th>Name</th><th>Size</th><th>Modified</th>
+          </tr></thead>
+          <tbody>
+    `;
+    if (currentPath && currentPath.includes('/')) {
+      const icon = '<img src="/static/icons/folder.png" class="archive-icon" style="width:14px;height:14px;">';
+      table += `<tr data-path=".." data-isdir="true"><td>${icon}..</td><td>-</td><td>-</td></tr>`;
+    }
+    currentFiles.forEach(f => {
+      let icon;
+      if (f.is_dir) {
+        icon = '<img src="/static/icons/folder.png" class="archive-icon" style="width:14px;height:14px;">';
+      } else {
+        const fileName = (f.display && f.display.length > 0) ? f.display : (f.name ? f.name.split('/').pop() : '');
+        const fileType = getTypeForFilename(fileName);
+        const iconName = globalData['extensions'][fileType] || 'unknown_.png';
+        icon = `<img src="/static/icons/${iconName}" class="archive-icon" style="width:14px;height:14px;">`;
+      }
+      const label = (f.display && f.display.length > 0) ? f.display : (f.name ? (f.name.endsWith('/') ? f.name.slice(0, -1).split('/').pop() : f.name.split('/').pop()) : '');
+      table += `<tr data-path="${f.name}" data-isdir="${f.is_dir}"><td>${icon}${label}</td><td>${f.size}</td><td>${f.modified}</td></tr>`;
+    });
+    table += '</tbody></table></div>';
+    e.innerHTML = table;
+
+    async function createNewInFolder(type) {
+      const tbody = e.querySelector('.archive-table tbody');
+      if (!tbody) return;
+      const icon = type === 'folder' ? '<img src="/static/icons/folder.png" class="archive-icon" style="width:14px;height:14px;">'
+                                     : '<img src="/static/icons/unknown_.png" class="archive-icon" style="width:14px;height:14px;">';
+      const tr = document.createElement('tr');
+      tr.dataset.isdir = (type === 'folder');
+      const tdName = document.createElement('td');
+      const tdSize = document.createElement('td');
+      const tdMod = document.createElement('td');
+      tdName.innerHTML = icon;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = type === 'folder' ? 'new_folder' : 'new_file';
+      input.style.display = 'inline-block';
+      input.style.minWidth = '100px';
+      input.style.maxWidth = '240px';
+      input.style.boxSizing = 'border-box';
+      input.style.background = 'rgba(0,0,0,0.2)';
+      input.style.color = 'inherit';
+      input.style.border = 'none';
+      input.style.outline = '1px solid rgba(255,255,255,0.3)';
+      input.style.borderRadius = '3px';
+      input.style.padding = '1px 2px';
+      input.style.fontSize = 'inherit';
+      input.style.fontFamily = 'inherit';
+      input.style.verticalAlign = 'middle';
+      tdName.appendChild(input);
+      tdSize.textContent = '-';
+      tdMod.textContent = '-';
+      tr.appendChild(tdName); tr.appendChild(tdSize); tr.appendChild(tdMod);
+      const firstRow = tbody.querySelector('tr[data-path=".."]');
+      const folderRows = Array.from(tbody.querySelectorAll('tr[data-isdir="true"]')).filter(r => (r.dataset.path || '') !== '..');
+      const lastFolderRow = folderRows.length ? folderRows[folderRows.length - 1] : null;
+      if (lastFolderRow) {
+        if (lastFolderRow.nextSibling) {
+          tbody.insertBefore(tr, lastFolderRow.nextSibling);
+        } else {
+          tbody.appendChild(tr);
+        }
+      } else if (firstRow) {
+        if (firstRow.nextSibling) {
+          tbody.insertBefore(tr, firstRow.nextSibling);
+        } else {
+          tbody.appendChild(tr);
+        }
+      } else {
+        tbody.insertBefore(tr, tbody.firstChild);
+      }
+      setTimeout(() => { try { input.focus(); input.select(); } catch {} }, 10);
+
+      let finished = false;
+      const cleanup = () => { if (finished) return; finished = true; tr.remove(); document.removeEventListener('click', handleDocumentClick); };
+      const commit = async (cancel) => {
+        document.removeEventListener('click', handleDocumentClick);
+        if (finished) return;
+        if (cancel) { cleanup(); return; }
+        let name = (input.value || '').trim();
+        if (!name) { cleanup(); return; }
+        if (name.includes('/') || name.includes('\\') || name.includes(':') || name.startsWith('.') || name.includes(';') || name.includes('*') || name.includes('?') || name.includes('"') || name.includes('<') || name.includes('>') || name.includes('|') || name.includes("'")) {
+          cleanup();
+          await prompt('Name cannot contain illegal characters', `Create ${type}`, 'Ok');
+          return;
+        }
+        let fullPath = currentPath ? `${currentPath}/${name}` : name;
+        try {
+          let resp;
+          if (type === 'folder') {
+            if (!fullPath.endsWith('/')) fullPath += '/';
+            resp = await post('files/folders/create', { path: fullPath });
+          } else {
+            resp = await post('files/upload', { file: fullPath, data: '' });
+          }
+          try {
+            const j = JSON.parse(resp);
+            if (j && (j.file || j.status)) {
+              finished = true;
+              renderPath(currentPath);
+              return;
+            }
+          } catch {}
+          if (resp === 'Updated' || resp.includes('created')) {
+            finished = true;
+            renderPath(currentPath);
+            return;
+          }
+          await prompt(resp || `Failed to create ${type}`, `Create ${type}`, 'Ok');
+          setTimeout(() => { try { input.focus(); input.select(); } catch {} }, 10);
+        } catch (err) {
+          await prompt('Unexpected error', `Create ${type}`, 'Ok');
+        }
+      };
+      input.addEventListener('keydown', async (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); await commit(false); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); commit(true); }
+      });
+      const handleDocumentClick = (ev) => {
+        if (ev.target !== input && !input.contains(ev.target)) {
+          document.removeEventListener('click', handleDocumentClick);
+          commit(false);
+        }
+      };
+      document.addEventListener('click', handleDocumentClick);
+    }
+
+    const applySelectionStyling = () => {
+      e.querySelectorAll('.archive-table tbody tr').forEach(row => {
+        const key = row.dataset.path || row.dataset.name;
+        if (!key || key === '..') return;
+        const sel = selectedRows.has(key);
+        row.classList.toggle('selected-once', sel);
+        row.style.background = '';
+        row.querySelectorAll('td').forEach(td => {
+          td.style.background = '';
+        });
+      });
+    };
+
+    e.querySelectorAll('.archive-table tbody tr').forEach(row => {
+      row.addEventListener('click', (ev) => {
+        const p = row.dataset.path || row.dataset.name;
+        if (!p || p === '..') return;
+        if (ev.ctrlKey) {
+          if (selectedRows.has(p)) selectedRows.delete(p); else selectedRows.add(p);
+        } else {
+          selectedRows.clear();
+          selectedRows.add(p);
+        }
+        applySelectionStyling();
+      });
+      row.ondblclick = () => {
+        const isDir = row.dataset.isdir === 'true';
+        const internalPath = row.dataset.path;
+        if (isDir) {
+          if (internalPath === '..') {
+            const parts = currentPath.split('/');
+            parts.pop();
+            renderPath(parts.join('/'));
+          } else {
+            renderPath(internalPath.replace(/\/$/, ''));
+          }
+        } else {
+          const fileName = internalPath.split('/').pop();
+          const type = getTypeForFilename(fileName);
+          if (type !== 'Unknown') {
+            Fopen(internalPath, type);
+          } else {
+            prompt('This file type is not supported','Error','Ok');
+          }
+        }
+      };
+      row.addEventListener('contextmenu', (ev) => {
+        try {
+          ev.preventDefault(); ev.stopPropagation();
+          hideContext();
+          const p = row.dataset.path || row.dataset.name;
+          if (!p || p === '..') return;
+
+          const isMultiSelected = selectedRows.size > 1;
+          let hasFolderSelected = false;
+          if (isMultiSelected) {
+            for (const s of selectedRows) {
+              const r = e.querySelector(`tr[data-path="${s}"]`);
+              if (r && r.dataset.isdir === 'true') { hasFolderSelected = true; break; }
+            }
+          } else {
+            hasFolderSelected = (row.dataset.isdir === 'true');
+          }
+
+          const menuEl = document.createElement('context');
+          const addBtn = (label, handler) => {
+            const b = document.createElement('button');
+            b.textContent = label;
+            b.addEventListener('click', async (e2) => {
+              e2.stopPropagation();
+              hideContext();
+              await handler();
+            });
+            menuEl.appendChild(b);
+          };
+
+          if (!isMultiSelected && !hasFolderSelected) {
+            const fname = (p.split('/').pop() || p);
+            const ftype = getTypeForFilename(fname);
+            addBtn('Open', async () => { Fopen(p, ftype); });
+          }
+          if (!hasFolderSelected) {
+            if (isMultiSelected) {
+              addBtn(`Download (${selectedRows.size})`, async () => {
+                const sel = Array.from(selectedRows);
+                for (const s of sel) { await Fdownload(s); }
+              });
+            } else {
+              addBtn('Download', async () => { await Fdownload(p); });
+            }
+          }
+          if (!isMultiSelected) {
+            addBtn('Rename', async () => { await FrenameInPath(p, key); });
+          }
+          addBtn('New file', async () => { await createNewInFolder('file'); });
+          addBtn('New folder', async () => { await createNewInFolder('folder'); });
+          if (isMultiSelected) {
+            addBtn(`Remove (${selectedRows.size})`, async () => {
+              const sel = Array.from(selectedRows);
+              for (const s of sel) { await FremoveInPath(s, key); }
+              await Frefresh();
+              try { await renderPath(currentPath); } catch {}
+            });
+          } else {
+            addBtn('Remove', async () => {
+              await FremoveInPath(p, key);
+              await Frefresh();
+              try { await renderPath(currentPath); } catch {}
+            });
+          }
+
+          menuEl.style.position = 'fixed';
+          menuEl.style.left = ev.clientX + 'px';
+          menuEl.style.top = ev.clientY + 'px';
+          menuEl.style.zIndex = '99999';
+          document.body.appendChild(menuEl);
+
+          try {
+            const rect = menuEl.getBoundingClientRect();
+            let nx = rect.left, ny = rect.top;
+            if (rect.right > window.innerWidth) nx = Math.max(0, window.innerWidth - rect.width - 4);
+            if (rect.bottom > window.innerHeight) ny = Math.max(0, window.innerHeight - rect.height - 4);
+            if (nx !== rect.left) menuEl.style.left = nx + 'px';
+            if (ny !== rect.top) menuEl.style.top = ny + 'px';
+          } catch {}
+        } catch (e) { }
+      });
+  applySelectionStyling();
+
+      row.addEventListener('mousedown', (downEvent) => {
+        if (downEvent.button !== 0) return;
+        const isDir = row.dataset.isdir === 'true';
+        const internalPath = row.dataset.path;
+        if (!internalPath || internalPath === '..') return;
+
+        let dragging = false; let ghost = null;
+        const sx = downEvent.clientX, sy = downEvent.clientY;
+        let draggedFiles = [];
+        if (selectedRows.has(internalPath)) {
+          selectedRows.forEach(key => {
+            const fullPath = key;
+            draggedFiles.push({ originalFileName: fullPath });
+          });
+        } else {
+          const fullPath = internalPath;
+          draggedFiles.push({ originalFileName: fullPath });
+        }
+        const draggedSet = new Set(draggedFiles.map(df => (df.originalFileName || '').replace(/\/$/, '')));
+        const updateGhost = (x, y) => {
+          if (!ghost) {
+            ghost = document.createElement('div');
+            ghost.className = 'archive-drag-ghost';
+            ghost.style.position = 'fixed';
+            ghost.style.zIndex = '2000';
+            ghost.style.pointerEvents = 'none';
+            ghost.style.padding = '6px 10px';
+            ghost.style.borderRadius = '6px';
+            ghost.style.background = 'rgba(30,30,30,0.9)';
+            ghost.style.color = '#fff';
+            ghost.style.fontSize = '12px';
+            ghost.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+            const count = draggedFiles.length;
+            const label = count > 1 ? `${count} files` : (draggedFiles[0].originalFileName.split('/').pop() || draggedFiles[0].originalFileName);
+            ghost.textContent = `Move: ${label}`;
+            document.body.appendChild(ghost);
+          }
+          ghost.style.left = (x + 12) + 'px';
+          ghost.style.top = (y + 12) + 'px';
+        };
+        const onMouseMove = (mv) => {
+          const dx = Math.abs(mv.clientX - sx), dy = Math.abs(mv.clientY - sy);
+          if (!dragging && (dx > 8 || dy > 8)) dragging = true;
+          if (dragging) updateGhost(mv.clientX, mv.clientY);
+        };
+        const onMouseUp = async (up) => {
+          document.removeEventListener('mousemove', onMouseMove, true);
+          document.removeEventListener('mouseup', onMouseUp, true);
+          if (dragging) {
+            up.preventDefault(); up.stopPropagation();
+            const elAt = document.elementFromPoint(up.clientX, up.clientY);
+            const targetRow = elAt && elAt.closest('tr[data-isdir="true"]');
+            if (targetRow && targetRow.dataset.path && targetRow.dataset.path !== '..') {
+              const targetPath = targetRow.dataset.path.replace(/\/$/, '');
+              const targetRaw = targetRow.dataset.path;
+              const targetIsSelected = selectedRows && (selectedRows.has(targetRaw) || selectedRows.has(targetPath) || selectedRows.has(targetPath + '/'));
+              if (draggedSet.has(targetPath) || targetIsSelected) {
+                if (ghost) { ghost.remove(); ghost = null; }
+                return;
+              } else {
+              (async () => {
+                for (const df of draggedFiles) {
+                  const orig = df.originalFileName;
+                  if (!orig) continue;
+                  if (orig.endsWith('/') && targetPath.startsWith(orig.replace(/\/$/, ''))) continue;
+                  const base = orig.replace(/\/$/, '').split('/').pop();
+                  const newPath = `${targetPath}/${base}` + (orig.endsWith('/') ? '/' : '');
+                  try { await post('files/move', { old: orig, new: newPath }); } catch {}
+                }
+                renderPath(currentPath);
+              })();
+              }
+            } else if (targetRow && targetRow.dataset.path === '..') {
+              const parentPath = currentPath && currentPath.includes('/') ? currentPath.split('/').slice(0, -1).join('/') : '';
+              (async () => {
+                for (const df of draggedFiles) {
+                  const orig = df.originalFileName;
+                  if (!orig) continue;
+                  const base = orig.replace(/\/$/, '').split('/').pop();
+                  const newPath = (parentPath ? `${parentPath}/${base}` : base) + (orig.endsWith('/') ? '/' : '');
+                  try { await post('files/move', { old: orig, new: newPath }); } catch {}
+                }
+                renderPath(currentPath);
+              })();
+            } else {
+              const filesContainer = document.getElementById('Files');
+              const containerRect = filesContainer.getBoundingClientRect();
+              if (up.clientX < containerRect.left || up.clientX > containerRect.right || up.clientY < containerRect.top || up.clientY > containerRect.bottom) {
+              } else if (elAt && elAt.closest('.winbox')) {
+              } else {
+              const dropX = up.clientX - containerRect.left;
+              const dropY = up.clientY - containerRect.top;
+              const snapped = snapToGrid(dropX, dropY);
+              const movedNames = [];
+              let offset = 0;
+              (async () => {
+                for (const df of draggedFiles) {
+                  const orig = df.originalFileName;
+                  const base = orig.replace(/\/$/, '').split('/').pop();
+                  const newPath = base + (orig.endsWith('/') ? '/' : '');
+                  try {
+                    const resp = await post('files/move', { old: orig, new: newPath });
+                    let finalName = newPath;
+                    try { const j = JSON.parse(resp); if (j && j.file) finalName = j.file; } catch {}
+                    const startCol = snapped.col + (offset % 3);
+                    const startRow = snapped.row + Math.floor(offset / 3);
+                    const targetPos = findNearestFreeSlot(startCol, startRow, finalName);
+                    globalData["filePositions"][finalName] = targetPos;
+                    movedNames.push(finalName);
+                    offset++;
+                  } catch (err) {
+                  }
+                }
+                if (movedNames.length) await saveFilePositions(movedNames);
+                await Frefresh();
+                renderPath(currentPath);
+              })();
+              }
+            }
+          }
+          if (ghost) { ghost.remove(); ghost = null; }
+        };
+        document.addEventListener('mousemove', onMouseMove, true);
+        document.addEventListener('mouseup', onMouseUp, true);
+      });
+    });
+
+  const content = e.querySelector('.archive-content') || e;
+    if (content) {
+      let selecting = false; let startX = 0; let startY = 0; let box = null; let baseSelection = null; let containerRect = null; let bodyRect = null; let prevPos = '';
+      const onMouseMove = (mv) => {
+        if (!selecting) return;
+        const cx = Math.min(Math.max(mv.clientX, containerRect.left), containerRect.right);
+        const cy = Math.min(Math.max(mv.clientY, bodyRect.top), containerRect.bottom);
+        const x1v = Math.min(startX, cx); const y1v = Math.min(startY, cy);
+        const x2v = Math.max(startX, cx); const y2v = Math.max(startY, cy);
+        box.style.left = (x1v - containerRect.left) + 'px';
+        box.style.top = (y1v - containerRect.top) + 'px';
+        box.style.width = (x2v - x1v) + 'px';
+        box.style.height = (y2v - y1v) + 'px';
+
+        const nextSel = new Set(baseSelection);
+        e.querySelectorAll('.archive-table tbody tr').forEach(r => {
+          const p = r.dataset.path || r.dataset.name;
+          if (!p || p === '..') return;
+          const rr = r.getBoundingClientRect();
+          const intersects = !(rr.right < x1v || rr.left > x2v || rr.bottom < y1v || rr.top > y2v);
+          if (intersects) nextSel.add(p);
+        });
+        selectedRows = nextSel;
+        applySelectionStyling();
+      };
+      const onMouseUp = () => {
+        if (!selecting) return;
+        selecting = false;
+        document.removeEventListener('mousemove', onMouseMove, true);
+        document.removeEventListener('mouseup', onMouseUp, true);
+        if (box) { box.remove(); box = null; }
+        content.style.userSelect = '';
+        e.style.overflow = '';
+        if (prevPos) e.style.position = prevPos;
+      };
+      content.addEventListener('mousedown', (ev) => {
+        if (ev.button !== 0) return;
+        if (ev.target.closest('tr')) return;
+        selecting = true;
+        containerRect = content.getBoundingClientRect();
+        const tbody = e.querySelector('.archive-table tbody');
+        bodyRect = tbody ? tbody.getBoundingClientRect() : containerRect;
+        startX = Math.min(Math.max(ev.clientX, containerRect.left), containerRect.right);
+        startY = Math.min(Math.max(ev.clientY, bodyRect.top), containerRect.bottom);
+        baseSelection = ev.ctrlKey ? new Set(selectedRows) : new Set();
+        if (!ev.ctrlKey) selectedRows.clear();
+        applySelectionStyling();
+        box = document.createElement('div');
+        prevPos = getComputedStyle(e).position;
+        if (prevPos === 'static') e.style.position = 'relative';
+        e.style.overflow = 'hidden';
+        box.style.position = 'absolute';
+        box.style.zIndex = '3';
+        box.style.pointerEvents = 'none';
+        box.style.border = '1px solid rgba(88,153,255,0.9)';
+        box.style.background = 'rgba(88,153,255,0.2)';
+        box.style.left = (startX - containerRect.left) + 'px'; box.style.top = (startY - containerRect.top) + 'px';
+        box.style.width = '0px'; box.style.height = '0px';
+        e.appendChild(box);
+        content.style.userSelect = 'none';
+        ev.preventDefault();
+        document.addEventListener('mousemove', onMouseMove, true);
+        document.addEventListener('mouseup', onMouseUp, true);
+      });
+      content.addEventListener('contextmenu', (ev) => {
+        if (ev.target.closest('tr')) return;
+        ev.preventDefault(); ev.stopPropagation();
+        hideContext();
+        const menuEl = document.createElement('context');
+        const addBtn = (label, handler) => {
+          const b = document.createElement('button');
+          b.textContent = label;
+          b.addEventListener('click', async (e2) => { e2.stopPropagation(); hideContext(); await handler(); });
+          menuEl.appendChild(b);
+        };
+        addBtn('New file', async () => { await createNewInFolder('file'); });
+        addBtn('New folder', async () => { await createNewInFolder('folder'); });
+        menuEl.style.position = 'fixed';
+        menuEl.style.left = ev.clientX + 'px';
+        menuEl.style.top = ev.clientY + 'px';
+        menuEl.style.zIndex = '99999';
+        document.body.appendChild(menuEl);
+      });
+    }
+  }
+
+  async function renderPath(path) {
+    currentPath = path || '';
+    e.dataset.path = currentPath;
+    selectedRows.clear();
+    const q = encodeURIComponent(currentPath);
+    const response = await get(`files/folders/list?path=${q}`);
+    try { currentFiles = JSON.parse(response); } catch { currentFiles = []; }
+    renderTable();
+  }
+
+  e.addEventListener('folder:refresh', (ev) => {
+    try {
+      const p = ev.detail && ev.detail.path !== undefined ? ev.detail.path : null;
+      if (p == null || p === currentPath) {
+        renderPath(currentPath);
+      }
+    } catch { renderPath(currentPath); }
+  });
+
+  let isMinimized = false;
+  const win = new WinBox({
+    title: title,
+    width: windowData.width,
+    height: windowData.height,
+    top: 50,
+    minheight: 200,
+    minwidth: 300,
+    right: 0,
+    x: windowData.x,
+    y: windowData.y,
+    bottom: 50,
+    left: 0,
+    mount: e,
+    icon: '/static/icons/folder.png',
+    class: ['modern', 'no-full'],
+    onresize: (w,h)=>{ setWindowSize('archive', key, w, h); },
+    onmove: (x,y)=>{ setWindowPosition('archive', key, x, y); },
+    onclose: ()=>{ delete globalData['openedWindows'][key]; window.localStorage.setItem('globalData_windows', JSON.stringify(globalData['openedWindows'])); return false; },
+    onminimize: ()=>{ if (isMinimized) return; isMinimized = true; globalData['mTab'][key] = true; },
+    onfocus: ()=>{ isMinimized = false; globalData['mTab'][key] = false; },
+    oncreate: ()=>{ globalData['openedWindows'][key] = { file: folderPath, extension: 'Folder', size: { width: windowData.width, height: windowData.height }, position: { x: windowData.x, y: windowData.y } }; saveOpenedWindowsState(); }
+  });
+
+  renderPath(currentPath);
 }
 
 videojs.registerComponent('repeatToggle', RepeatToggle);
@@ -2337,6 +3541,10 @@ document.addEventListener("click", async (event)=> {
     if (globalData["focused"] == fileElement) {
       let extension = event.target.getAttribute("extension");
 
+      if (fileElement && (fileElement.getAttribute('data-temp-new') === '1' || fileElement.querySelector('input'))) {
+        return;
+      }
+
       if (document.getElementById(fileName)) {return};
       Fopen(fileName, extension);
       
@@ -2405,6 +3613,40 @@ function prompt(text, title, b1, b2) {
         onclose: (force) => {
           if (force) {
             return false;
+          }
+
+          function promptInput(title, placeholder) {
+            return new Promise((resolve) => {
+              const e = document.createElement('div');
+              let id = (Math.random() + 1).toString(36).substring(7);
+              e.innerHTML = `
+                <p class="promptText">${title}</p>
+                <input id="${id}-in" class="promptInput" type="text" placeholder="${placeholder || ''}" style="width: 100%; box-sizing: border-box; margin-bottom: 8px;"/>
+                <button id="${id}-1" class="promptBtn">Ok</button>
+                <button id="${id}-2" class="promptBtn">Cancel</button>
+              `;
+              const wb = new WinBox({
+                title: 'Input',
+                width: 260,
+                height: 150,
+                top: 50,
+                minheight: 100,
+                x: '42%',
+                y: '43%',
+                mount: e,
+                class: ["modern", "no-full"]
+              });
+              setTimeout(() => { document.getElementById(`${id}-in`)?.focus(); }, 50);
+              document.getElementById(`${id}-1`).addEventListener('click', () => {
+                const val = document.getElementById(`${id}-in`).value.trim();
+                wb.close(true);
+                resolve(val || null);
+              });
+              document.getElementById(`${id}-2`).addEventListener('click', () => {
+                wb.close(true);
+                resolve(null);
+              });
+            });
           }
           resolve("Close");
           return false;
