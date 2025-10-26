@@ -49,31 +49,6 @@ body {
     float: right;
     overflow: hidden;
 }
-/*
-#display {
-    z-index: 9999;
-    display: none;
-    position: absolute;
-    left:0;
-    top:0;
-    width:100%;
-    height: 100%;
-    background-color: black;
-    color:white;
-}
-
-@media screen and (max-width: 1024px) {
-    #display {
-        display: block;
-    }
-}
-
-@media screen and (max-height: 640px) {
-    #display {
-        display: block;
-    }
-}
-*/
 
 .dropdown .dropbtn,
 .dropdown-right .dropbtn,
@@ -437,6 +412,7 @@ file img {
     line-height: 1.5;
     max-width: 400px;
     white-space: pre-line;
+    display: var(--tooltip-display, block);
 }
 
 file:hover .tooltip {
