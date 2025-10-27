@@ -927,19 +927,96 @@ document.addEventListener("contextmenu", (event)=>{
   };
 });
 
+if (!window.showBusyOverlay) {
+  window.showBusyOverlay = (message = 'Working…') => {
+    let el = document.getElementById('busyOverlay');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'busyOverlay';
+      el.style.position = 'fixed';
+      el.style.inset = '0';
+      el.style.background = 'rgba(0,0,0,0.35)';
+      el.style.zIndex = '99999';
+      el.style.display = 'flex';
+      el.style.alignItems = 'center';
+      el.style.justifyContent = 'center';
+      el.style.backdropFilter = 'blur(2px)';
+      const box = document.createElement('div');
+      box.style.padding = '16px 20px';
+      box.style.borderRadius = '10px';
+      box.style.background = 'rgba(20,20,20,0.9)';
+      box.style.color = '#fff';
+      box.style.font = '14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+      box.style.display = 'flex';
+      box.style.alignItems = 'center';
+      box.style.gap = '10px';
+      const spinner = document.createElement('div');
+      spinner.style.width = '18px';
+      spinner.style.height = '18px';
+      spinner.style.border = '2px solid rgba(255,255,255,0.25)';
+      spinner.style.borderTopColor = '#fff';
+      spinner.style.borderRadius = '50%';
+      spinner.style.animation = 'spin 0.9s linear infinite';
+      const text = document.createElement('div');
+      text.className = 'busyOverlayText';
+      text.textContent = message;
+      box.appendChild(spinner);
+      box.appendChild(text);
+      el.appendChild(box);
+      const style = document.createElement('style');
+      style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+      el.appendChild(style);
+      document.body.appendChild(el);
+    } else {
+      const t = el.querySelector('.busyOverlayText');
+      if (t) t.textContent = message;
+      el.style.display = 'flex';
+    }
+  };
+}
+if (!window.hideBusyOverlay) {
+  window.hideBusyOverlay = () => {
+    const el = document.getElementById('busyOverlay');
+    if (el) el.style.display = 'none';
+  };
+}
+if (!window.uploadFileWithProgress) {
+  window.uploadFileWithProgress = (file) => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/files/upload');
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const p = Math.round((e.loaded / e.total) * 100);
+          window.showBusyOverlay('Uploading ' + p + '%');
+        }
+      };
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 4) {
+          resolve(xhr.responseText || '');
+        }
+      };
+      xhr.onerror = () => reject(new Error('Upload failed'));
+      const fd = new FormData();
+      fd.append('file', file);
+      xhr.send(fd);
+    });
+  };
+}
+
 document.getElementById("file_upload").addEventListener("change", handleFiles, false);
 async function handleFiles() {
-  const formData = new FormData();
-
-  formData.append('file', this.files[0]);
-  var response = await fetch('/files/upload', {
-    method: 'POST',
-    body: formData
-  });
-  response = await response.text();
+  const f = this.files[0];
+  let response = '';
+  showBusyOverlay('Uploading 0%');
+  try {
+    response = await uploadFileWithProgress(f);
+  } finally {
+    hideBusyOverlay();
+  }
   if (response != "Updated") {
-    loadFiles("["+response+"]");
-  };
+    loadFiles("[" + response + "]");
+  }
 };
 
 async function Frefresh() {
@@ -2582,6 +2659,28 @@ async function openArchive(file, key) {
           if (el) el.style.display = 'none';
         };
 
+        const uploadFileWithProgress = (file) => {
+          return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/files/upload');
+            xhr.upload.onprogress = (e) => {
+              if (e.lengthComputable) {
+                const p = Math.round((e.loaded / e.total) * 100);
+                showBusyOverlay('Uploading ' + p + '%');
+              }
+            };
+            xhr.onreadystatechange = () => {
+              if (xhr.readyState === 4) {
+                resolve(xhr.responseText || '');
+              }
+            };
+            xhr.onerror = () => reject(new Error('Upload failed'));
+            const fd = new FormData();
+            fd.append('file', file);
+            xhr.send(fd);
+          });
+        };
+
         const extractToDesktopAt = async (clientX, clientY) => {
           try {
             const filesContainer = document.getElementById('Files');
@@ -2630,11 +2729,14 @@ async function openArchive(file, key) {
                 const resp = await fetch(getUrl);
                 if (!resp.ok) { continue; }
                 const blob = await resp.blob();
-                const fd = new FormData();
                 const uploadFile = new File([blob], baseName, { type: blob.type || 'application/octet-stream' });
-                fd.append('file', uploadFile);
-                let up = await fetch('/files/upload', { method: 'POST', body: fd });
-                let upText = await up.text();
+                showBusyOverlay('Uploading 0%');
+                let upText = '';
+                try {
+                  upText = await uploadFileWithProgress(uploadFile);
+                } finally {
+                  hideBusyOverlay();
+                }
                 globalData["filePositions"][baseName] = targetPos;
                 await saveFilePositions([baseName]);
                 if (upText !== 'Updated') {
