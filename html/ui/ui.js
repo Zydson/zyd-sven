@@ -985,18 +985,36 @@ if (!window.uploadFileWithProgress) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/files/upload');
+      window.showBusyOverlay('Uploading 0%');
+      let lastLoaded = 0;
+      let lastChange = Date.now();
+      const stallMs = 8000;
+      const tick = setInterval(() => {
+        if (xhr.readyState !== 4 && Date.now() - lastChange > stallMs) {
+          try { xhr.abort(); } catch {}
+          clearInterval(tick);
+          reject(new Error('Upload stalled'));
+        }
+      }, 1000);
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
+          if (e.loaded !== lastLoaded) {
+            lastLoaded = e.loaded;
+            lastChange = Date.now();
+          }
           const p = Math.round((e.loaded / e.total) * 100);
           window.showBusyOverlay('Uploading ' + p + '%');
         }
       };
       xhr.onreadystatechange = () => {
         if (xhr.readyState === 4) {
-          resolve(xhr.responseText || '');
+          clearInterval(tick);
+          const ok = xhr.status >= 200 && xhr.status < 300;
+          if (ok) resolve(xhr.responseText || ''); else reject(new Error('Upload failed'));
         }
       };
-      xhr.onerror = () => reject(new Error('Upload failed'));
+      xhr.onerror = () => { clearInterval(tick); reject(new Error('Upload error')); };
+      xhr.onabort = () => { clearInterval(tick); reject(new Error('Upload aborted')); };
       const fd = new FormData();
       fd.append('file', file);
       xhr.send(fd);
@@ -1006,13 +1024,17 @@ if (!window.uploadFileWithProgress) {
 
 document.getElementById("file_upload").addEventListener("change", handleFiles, false);
 async function handleFiles() {
+  if (!this.files || this.files.length === 0) return;
   const f = this.files[0];
   let response = '';
   showBusyOverlay('Uploading 0%');
   try {
     response = await uploadFileWithProgress(f);
+  } catch (e) {
+    response = '';
   } finally {
     hideBusyOverlay();
+    this.value = '';
   }
   if (response != "Updated") {
     loadFiles("[" + response + "]");
@@ -2659,27 +2681,7 @@ async function openArchive(file, key) {
           if (el) el.style.display = 'none';
         };
 
-        const uploadFileWithProgress = (file) => {
-          return new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/files/upload');
-            xhr.upload.onprogress = (e) => {
-              if (e.lengthComputable) {
-                const p = Math.round((e.loaded / e.total) * 100);
-                showBusyOverlay('Uploading ' + p + '%');
-              }
-            };
-            xhr.onreadystatechange = () => {
-              if (xhr.readyState === 4) {
-                resolve(xhr.responseText || '');
-              }
-            };
-            xhr.onerror = () => reject(new Error('Upload failed'));
-            const fd = new FormData();
-            fd.append('file', file);
-            xhr.send(fd);
-          });
-        };
+        
 
         const extractToDesktopAt = async (clientX, clientY) => {
           try {
