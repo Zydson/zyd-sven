@@ -12,18 +12,20 @@ globalData["extensions"] = {
 };
 
 globalData["windows"] = {
-  "notepad": {"size": {"width": 400, "height": 300}, "position": {"x": "10%", "y": "20%"}},
-  "image": {"size": {"width": 600, "height": 400}, "position": {"x": "10%", "y": "20%"}},
-  "archive": {"size": {"width": 600, "height": 400}, "position": {"x": "10%", "y": "20%"}},
-  "video": {"size": {"width": 600, "height": 400}, "position": {"x": "10%", "y": "20%"}},
-  "audio": {"size": {"width": 300, "height": 200}, "position": {"x": "10%", "y": "20%"}},
-  "code": {"size": {"width": 800, "height": 500}, "position": {"x": "10%", "y": "15%"}},
-  "calculator": {"size": {"width": 200, "height": 300}, "position": {"x": "10%", "y": "20%"}},
+  "notepad": {"size": {"width": 400, "height": 300}, "position": {"x": "center", "y": "center"}},
+  "image": {"size": {"width": 600, "height": 400}, "position": {"x": "center", "y": "center"}},
+  "archive": {"size": {"width": 600, "height": 400}, "position": {"x": "center", "y": "center"}},
+  "video": {"size": {"width": 600, "height": 400}, "position": {"x": "center", "y": "center"}},
+  "audio": {"size": {"width": 300, "height": 200}, "position": {"x": "center", "y": "center"}},
+  "code": {"size": {"width": 800, "height": 500}, "position": {"x": "center", "y": "center"}},
+  "calculator": {"size": {"width": 200, "height": 300}, "position": {"x": "center", "y": "center"}},
 };
 
 globalData["mTab"] = {}
 globalData["openedWindows"] = JSON.parse(window.localStorage.getItem("globalData_windows")) || {}
 globalData["filePositions"] = {}
+globalData["fileUuids"] = {}
+globalData["filePositionsByUUID"] = {}
 globalData["gridSize"] = 9;
 globalData["contextClickPosition"] = null;
 globalData["selectedFiles"] = new Set();
@@ -50,6 +52,12 @@ if (tempData != null) {
       files.forEach(file => {
         if (file.position) {
           globalData["filePositions"][file.file] = file.position;
+        }
+        if (file.uuid) {
+          globalData["fileUuids"][file.file] = file.uuid;
+          if (file.position) {
+            try { globalData["filePositionsByUUID"][file.uuid] = file.position; } catch {}
+          }
         }
       });
       
@@ -83,9 +91,11 @@ if (tempData != null) {
 function saveWindowsConfig() {
   try { window.localStorage.setItem("globalData", JSON.stringify(globalData["windows"])); } catch {}
 }
+
 function saveOpenedWindowsState() {
   try { window.localStorage.setItem("globalData_windows", JSON.stringify(globalData["openedWindows"])); } catch {}
 }
+
 async function saveFilePositions(specificFiles = null) {
   try {
     let positionsToSave;
@@ -107,11 +117,18 @@ async function saveFilePositions(specificFiles = null) {
 function setWindowSize(kind, key, width, height) {
   try {
     if (globalData["mTab"][key] != true) {
-      if (globalData["windows"][kind]) {
+      if (globalData["windows"][kind] && (key == null)) {
         globalData["windows"][kind]["size"] = { width, height };
       }
       if (globalData["openedWindows"][key]) {
         globalData["openedWindows"][key]["size"] = { width, height };
+        const file = globalData["openedWindows"][key].file;
+        if (file) {
+          const fileUuid = (globalData["fileUuids"] && globalData["fileUuids"][file]) ? globalData["fileUuids"][file] : null;
+          if (fileUuid) {
+            window.localStorage.setItem(`filesize_${fileUuid}`, JSON.stringify({ width: width, height: height }));
+          }
+        }
       }
       saveOpenedWindowsState();
       saveWindowsConfig();
@@ -121,11 +138,19 @@ function setWindowSize(kind, key, width, height) {
 function setWindowPosition(kind, key, x, y) {
   try {
     if (globalData["mTab"][key] != true) {
-      if (globalData["windows"][kind]) {
+      if (globalData["windows"][kind] && (key == null)) {
         globalData["windows"][kind]["position"] = { x, y };
       }
       if (globalData["openedWindows"][key]) {
         globalData["openedWindows"][key]["position"] = { x, y };
+        const file = globalData["openedWindows"][key].file;
+        if (file) {
+          const fileUuid = (globalData["fileUuids"] && globalData["fileUuids"][file]) ? globalData["fileUuids"][file] : null;
+          if (fileUuid) {
+            window.localStorage.setItem(`filepos_${fileUuid}`, JSON.stringify({ x: x, y: y }));
+            globalData["filePositionsByUUID"][fileUuid] = { x: x, y: y };
+          }
+        }
       }
       saveOpenedWindowsState();
       saveWindowsConfig();
@@ -272,22 +297,11 @@ function createEditableInput(span, initialValue = '', selectAll = false) {
   const input = document.createElement('input');
   input.type = 'text';
   input.value = initialValue;
+  input.className = 'rename-input';
   input.style.width = spanRect.width + 'px';
   input.style.height = spanRect.height + 'px';
-  input.style.boxSizing = 'border-box';
-  input.style.background = 'rgba(0,0,0,0.2)';
-  input.style.color = 'inherit';
-  input.style.border = 'none';
-  input.style.outline = '1px solid rgba(255,255,255,0.3)';
-  input.style.borderRadius = '3px';
   input.style.padding = spanStyles.padding || '0';
   input.style.margin = spanStyles.margin || '0';
-  input.style.fontSize = spanStyles.fontSize || 'inherit';
-  input.style.fontFamily = spanStyles.fontFamily || 'inherit';
-  input.style.lineHeight = spanStyles.lineHeight || 'inherit';
-  input.style.textAlign = 'center';
-  input.style.display = spanStyles.display || 'inline-block';
-  input.style.verticalAlign = spanStyles.verticalAlign || 'baseline';
   
   span.replaceWith(input);
   
@@ -600,14 +614,56 @@ function setupFileDragging(fileElement) {
 }
 
 
-function getWindowData(name,key) {
+function getWindowData(name,key,file) {
   if (globalData["windows"][name]) {
     var size = globalData["windows"][name]["size"];
     var position = globalData["windows"][name]["position"];
-    if (key!=null && globalData["openedWindows"][key]["size"]) {
+
+    if (key!=null && globalData["openedWindows"][key]) {
       size = globalData["openedWindows"][key]["size"];
       position = globalData["openedWindows"][key]["position"];
+    } else if (file) {
+      const fileUuid = (globalData["fileUuids"] && globalData["fileUuids"][file]) ? globalData["fileUuids"][file] : null;
+      if (fileUuid) {
+        let hasOtherInstance = false;
+        let otherInstancePos = null;
+        let otherInstanceSize = null;
+        for (const k in globalData["openedWindows"]) {
+          try {
+            const info = globalData["openedWindows"][k];
+            if (info && info.file === file) { 
+              hasOtherInstance = true; 
+              if (info.position) otherInstancePos = info.position;
+              if (info.size) otherInstanceSize = info.size;
+              break; 
+            }
+          } catch (e) {}
+        }
+
+        if (hasOtherInstance) {
+          if (otherInstancePos) position = otherInstancePos;
+          if (otherInstanceSize) size = otherInstanceSize;
+        } else {
+          try {
+            const stored = window.localStorage.getItem(`filepos_${fileUuid}`);
+            if (stored) {
+              const pos = JSON.parse(stored);
+              if (pos && typeof pos.x !== 'undefined' && typeof pos.y !== 'undefined') {
+                position = pos;
+              }
+            }
+            const storedSize = window.localStorage.getItem(`filesize_${fileUuid}`);
+            if (storedSize) {
+              const s = JSON.parse(storedSize);
+              if (s && typeof s.width !== 'undefined' && typeof s.height !== 'undefined') {
+                size = s;
+              }
+            }
+          } catch (e) {}
+        }
+      }
     }
+
     return {
       "width": size["width"],
       "height": size["height"],
@@ -680,22 +736,23 @@ function loadFiles(files) {
 
     el.setAttribute("id", "F" + d.file);
     el.setAttribute("data-name", d.file);
+    el.setAttribute("uuid",d.uuid);
     el.setAttribute("extension", d.type);
     el.setAttribute("draggable", "true");
 
     let labelHtml, tooltipHtml;
     if (d.type === 'Folder') {
       const disp = (d.file || '').replace(/\/$/, '');
-      labelHtml = `<span extension="${d.type}" data-name="${d.file}">${disp}</span>`;
-      tooltipHtml = `<div extension="${d.type}" data-name="${d.file}" class="tooltip">Name: ${disp}<br>Type: Folder<br>Size: -<br>Changed: ${d.last_change || '-'}</div>`;
+      labelHtml = `<span extension="${d.type}" uuid="${d.uuid}" data-name="${d.file}">${disp}</span>`;
+      tooltipHtml = `<div extension="${d.type}" uuid="${d.uuid}" data-name="${d.file}" class="tooltip">Name: ${disp}<br>Type: Folder<br>Size: -<br>Changed: ${d.last_change || '-'}</div>`;
     } else {
       const lab = computeDisplayNames(d.file);
-      labelHtml = `<span extension="${d.type}" data-name="${d.file}">${lab.name}</span>`;
-      tooltipHtml = `<div extension="${d.type}" data-name="${d.file}" class="tooltip">Name: ${lab.nameL}<br>Type: ${d.type}<br>Size: ${d.size}<br>Changed: ${d.last_change}</div>`;
+      labelHtml = `<span extension="${d.type}" uuid="${d.uuid}" data-name="${d.file}">${lab.name}</span>`;
+      tooltipHtml = `<div extension="${d.type}" uuid="${d.uuid}" data-name="${d.file}" class="tooltip">Name: ${lab.nameL}<br>Type: ${d.type}<br>Size: ${d.size}<br>Changed: ${d.last_change}</div>`;
     }
 
     el.innerHTML = `
-      <img extension="${d.type}" data-name="${d.file}" src="/static/icons/${ic}">
+      <img extension="${d.type}" uuid="${d.uuid}" data-name="${d.file}" src="/static/icons/${ic}">
       ${labelHtml}
       ${tooltipHtml}
     `;
@@ -907,13 +964,13 @@ document.addEventListener("contextmenu", (event)=>{
     globalData["contextClickPosition"] = { x: clickX, y: clickY };
     
     var e = document.createElement("context");
-  e.innerHTML = `
-    <button class="context-create-btn">Create file</button>
-    <button class="context-create-folder-btn">Create folder</button>
-    <button onclick='document.getElementById("file_upload").click()'>Upload</button>
-    <button onclick='Frefresh()'>Refresh</button>
-  `;
-    e.style.position = "absolute";
+    e.innerHTML = `
+      <button class="context-create-btn">Create file</button>
+      <button class="context-create-folder-btn">Create folder</button>
+      <button onclick='document.getElementById("file_upload").click()'>Upload</button>
+      <button onclick='Frefresh()'>Refresh</button>
+    `;
+    e.className = 'context-menu';
     e.style.left = event.clientX + "px";
     e.style.top = event.clientY + "px";
     document.getElementById("wallpaper").appendChild(e);
@@ -933,39 +990,16 @@ if (!window.showBusyOverlay) {
     if (!el) {
       el = document.createElement('div');
       el.id = 'busyOverlay';
-      el.style.position = 'fixed';
-      el.style.inset = '0';
-      el.style.background = 'rgba(0,0,0,0.35)';
-      el.style.zIndex = '99999';
-      el.style.display = 'flex';
-      el.style.alignItems = 'center';
-      el.style.justifyContent = 'center';
-      el.style.backdropFilter = 'blur(2px)';
       const box = document.createElement('div');
-      box.style.padding = '16px 20px';
-      box.style.borderRadius = '10px';
-      box.style.background = 'rgba(20,20,20,0.9)';
-      box.style.color = '#fff';
-      box.style.font = '14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
-      box.style.display = 'flex';
-      box.style.alignItems = 'center';
-      box.style.gap = '10px';
+      box.className = 'busy-box';
       const spinner = document.createElement('div');
-      spinner.style.width = '18px';
-      spinner.style.height = '18px';
-      spinner.style.border = '2px solid rgba(255,255,255,0.25)';
-      spinner.style.borderTopColor = '#fff';
-      spinner.style.borderRadius = '50%';
-      spinner.style.animation = 'spin 0.9s linear infinite';
+      spinner.className = 'busy-spinner';
       const text = document.createElement('div');
       text.className = 'busyOverlayText';
       text.textContent = message;
       box.appendChild(spinner);
       box.appendChild(text);
       el.appendChild(box);
-      const style = document.createElement('style');
-      style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
-      el.appendChild(style);
       document.body.appendChild(el);
     } else {
       const t = el.querySelector('.busyOverlayText');
@@ -979,6 +1013,49 @@ if (!window.hideBusyOverlay) {
     const el = document.getElementById('busyOverlay');
     if (el) el.style.display = 'none';
   };
+}
+if (!window.notify) {
+  window.notify = (text, opts = {}) => {
+    let c = document.getElementById('notifyContainer');
+    if (!c) {
+      c = document.createElement('div');
+      c.id = 'notifyContainer';
+      document.body.appendChild(c);
+    }
+    const t = String(text == null ? '' : text);
+    const type = (opts.type || 'info');
+    const dur = Number(opts.duration || 5000);
+    const colors = { info: '#3a86ff', success: '#2fb36d', error: '#e15555', warn: '#f1a20b' };
+    const dot = colors[type] || colors.info;
+    const box = document.createElement('div');
+    box.className = 'notify-box';
+    const badge = document.createElement('div');
+    badge.className = 'notify-badge';
+    badge.style.setProperty('--notify-color', dot);
+    const msg = document.createElement('div');
+    msg.className = 'notify-msg';
+    msg.textContent = t;
+    const close = document.createElement('button');
+    close.className = 'notify-close';
+    close.textContent = '×';
+    close.onmouseenter = () => { close.style.color = '#fff'; close.style.background = 'rgba(255,255,255,0.08)'; };
+    close.onmouseleave = () => { close.style.color = '#bbb'; close.style.background = 'transparent'; };
+    box.appendChild(badge);
+    box.appendChild(msg);
+    box.appendChild(close);
+    let timer = null;
+    const remove = () => {
+      box.style.animation = 'nout 200ms ease-in forwards';
+      setTimeout(() => { if (box.parentNode) box.parentNode.removeChild(box); }, 220);
+    };
+    close.onclick = (e) => { e.stopPropagation(); if (timer) clearTimeout(timer); remove(); };
+    box.onmouseenter = () => { if (timer) clearTimeout(timer); };
+    box.onmouseleave = () => { timer = setTimeout(remove, dur); };
+    c.appendChild(box);
+    timer = setTimeout(remove, dur);
+    return box;
+  };
+  window.showNotification = window.notify;
 }
 if (!window.uploadFileWithProgress) {
   window.uploadFileWithProgress = (file) => {
@@ -1026,18 +1103,25 @@ document.getElementById("file_upload").addEventListener("change", handleFiles, f
 async function handleFiles() {
   if (!this.files || this.files.length === 0) return;
   const f = this.files[0];
+  if (f.size > window.maxUploadSize) {
+    if (window.notify) window.notify('File too large. Maximum size: ' + (window.maxUploadSize / (1024 * 1024)).toFixed(0) + ' MB', { type: 'error' });
+    this.value = '';
+    return;
+  }
   let response = '';
   showBusyOverlay('Uploading 0%');
   try {
     response = await uploadFileWithProgress(f);
   } catch (e) {
     response = '';
+    if (window.notify) window.notify('Upload failed', { type: 'error' });
   } finally {
     hideBusyOverlay();
     this.value = '';
   }
   if (response != "Updated") {
     loadFiles("[" + response + "]");
+    if (window.notify) window.notify('Upload completed', { type: 'success' });
   }
 };
 
@@ -2012,7 +2096,7 @@ function openNotepad(text,file,key) {
   var prompted = false;
   var dynamic = false;
   var e = document.createElement("div");
-  var windowData = getWindowData("notepad",key);
+  var windowData = getWindowData("notepad",key,file);
   globalData["mTab"][key] = false;
   title = file;
 
@@ -2249,7 +2333,7 @@ async function openCodeEditor(text, file, key, opts) {
 
   e.appendChild(editorHost);
 
-  const windowData = getWindowData('code', key);
+  const windowData = getWindowData('code', key, file);
   if (key == null) key = (Math.random() + 1).toString(36).substring(7);
 
   let isMinimized = false;
@@ -2387,7 +2471,7 @@ async function openArchive(file, key) {
     e.style.display = 'flex';
     e.style.flexDirection = 'column';
 
-    const windowData = getWindowData("archive", key);
+    const windowData = getWindowData("archive", key, file);
     const title = file;
   let currentPath = '';
   let currentFiles = [];
@@ -2930,7 +3014,7 @@ async function openFolder(folderPath, key) {
   e.classList.add('folder-window');
   e.setAttribute("id", "folder-win-" + key);
 
-  const windowData = getWindowData('archive', key);
+  const windowData = getWindowData('archive', key, folderPath);
   const title = folderPath.replace(/\/$/, '') || 'Folder';
   let currentPath = folderPath.replace(/\/$/, '');
   let currentFiles = [];
@@ -3465,14 +3549,15 @@ async function openFolder(folderPath, key) {
 
 videojs.registerComponent('repeatToggle', RepeatToggle);
 
-function openImage(file,key, title) {
+function openImage(file, key, title) {
   var e = document.createElement("div");
-  var windowData = getWindowData("image",key);
-
+  var origKey = key;
+  var windowData = getWindowData("image",key,file);
   if (key == null) {
     key = (Math.random() + 1).toString(36).substring(7);
   }
-  
+  const fileUuid = (globalData["fileUuids"] && globalData["fileUuids"][file]) ? globalData["fileUuids"][file] : null;
+
   const imageUrl = file.startsWith('files/archive/get/') ? file : `/files/get/${file}`;
   const windowTitle = title || file;
 
@@ -3480,8 +3565,26 @@ function openImage(file,key, title) {
       <img src="${imageUrl}" style="width: 100%; height: 100%;" alt="${windowTitle}">
   `;
 
-  let isMinimized = false;
-  new WinBox({
+  let hasSavedSize = false;
+  if (origKey != null && globalData["openedWindows"][origKey] && globalData["openedWindows"][origKey].size) {
+      hasSavedSize = true;
+  } else if (fileUuid) {
+      for (const k in globalData["openedWindows"]) {
+          try {
+            const info = globalData["openedWindows"][k];
+            if (info && info.file === file && info.size) { 
+               hasSavedSize = true; 
+               break; 
+            }
+          } catch (e) {}
+      }
+      if (!hasSavedSize && window.localStorage.getItem(`filesize_${fileUuid}`)) {
+          hasSavedSize = true;
+      }
+  }
+
+  let isMinMax = false;
+  const win = new WinBox({
     title: windowTitle,
     width: windowData.width,
     height: windowData.height,
@@ -3509,15 +3612,22 @@ function openImage(file,key, title) {
       setTimeout(() => { setWindowSize('image', key, width, height); },100);
     },
     onmove: (x, y) => {
-      setTimeout(() => { setWindowPosition('image', key, x, y); },100);
+      setTimeout(() => { 
+        setWindowPosition('image', key, x, y);
+      },100);
     },
     onminimize: () => {
-      if (isMinimized) return;
-      isMinimized = true;
+      if (isMinMax) return;
+      isMinMax = true;
       globalData["mTab"][key] = true;
     },
-    onfocus: () => {
-      isMinimized = false;
+    onmaximize: () => {
+      if (isMinMax) return;
+      isMinMax = true;
+      globalData["mTab"][key] = true;
+    },
+    onrestore: () => {
+      isMinMax = false;
       globalData["mTab"][key] = false;
     },
     oncreate: () => {
@@ -3525,11 +3635,39 @@ function openImage(file,key, title) {
       saveOpenedWindowsState();
     }
    });
+
+   if (!hasSavedSize) {
+     const img = e.querySelector("img");
+     if (img) {
+       img.onload = () => {
+         try {
+           const naturalW = img.naturalWidth;
+           const naturalH = img.naturalHeight;
+           const headerHeight = 45;
+           const maxW = window.innerWidth * 0.8;
+           const maxH = window.innerHeight * 0.8;
+           
+           let scale = 1;
+           if (naturalW > maxW || (naturalH + headerHeight) > maxH) {
+             scale = Math.min(maxW / naturalW, (maxH - headerHeight) / naturalH);
+           }
+           
+           const finalW = Math.max(200, Math.floor(naturalW * scale));
+           const finalH = Math.max(100, Math.floor(naturalH * scale + headerHeight));
+           
+           win.resize(finalW, finalH);
+           const newX = Math.max(0, (window.innerWidth - finalW) / 2);
+           const newY = Math.max(0, (window.innerHeight - finalH) / 2);
+           win.move(newX, newY);
+         } catch(e) {}
+       };
+     }
+   }
 };
 
 async function openVideo(file,file_type,key, title) {
   var e = document.createElement("div");
-  var windowData = getWindowData(file_type,key);
+  var windowData = getWindowData(file_type,key,file);
   const videoId = `video_${Date.now()}`;
 
   if (key == null) {

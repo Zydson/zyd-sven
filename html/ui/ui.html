@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="static/externals/css/winbox-min.css">
     <link rel="stylesheet" href="static/externals/css/winbox-modern.css">
     <link rel="stylesheet" href="static/externals/css/dataTables-min.css">
-    <link rel="stylesheet" href="s/ui/ui.css?a={{date}}">
+    <link rel="stylesheet" href="s/ui/ui.css">
     <script>
       ace.config.set('basePath', '/static/externals/js/ace');
       ace.config.set('modePath', '/static/externals/js/ace');
@@ -60,6 +60,9 @@
     </div>
     <script src="static/externals/js/winbox-min.js"></script>
     <script src="static/externals/js/vjs-min.js"></script>
-    <script src="s/ui/ui.js?a={{date}}"></script>
+    <script>
+      window.maxUploadSize = Number("{{max_upload_size}}");
+    </script>
+    <script src="s/ui/ui.js"></script>
   </body>
 </html>
