@@ -2,26 +2,84 @@ from globals import *
 
 user_bp = Blueprint('user', __name__)
 
-##[REGISTER]##
 def RegisterUser(username,password):
+    if username in Accounts:
+        return "Username already exists"
+    if "salt" == username:
+        return "Invalid username"
+    if len(password) < 8:
+        return "Password too short"
+        
     uid = ''.join(random.choice(string.ascii_letters) for i in range(8))
-    token = ''.join(random.choice(string.ascii_letters) for i in range(64))
+    token = ''.join(random.choice(string.ascii_letters) for i in range(32))
     Accounts[username] = {
         "username": username,
-        "password": f'{bcrypt.hashpw(password.encode(), b"$2b$12$BfgXYoiUENZovKzwqYy48OMPRG9kIhc7Kt07DBcQQcmExk/oUZxHi")}',
+        "password": f'{bcrypt.hashpw(password.encode(),Accounts["salt"].encode())}',
         "created_at": datetime.datetime.today().strftime('%Y-%m-%d %H:%M'),
         "uid": uid,
         "token": token,
         "files": [],
-        "wallpaper": "static/default.jpg"
+        "file_positions": [],
+        "wallpaper": "static/default.jpg",
     }
     updateJson()
-    os.mkdir(f"accounts/{uid}")
+    try:
+        os.mkdir(f"accounts/{uid}")
+    except:
+        pass
     
-    print("Succesfuly created account")
+    return "OK"
 
-##[LOGIN]##
-tempLoginSecurity = {}
+@user_bp.route("/register", methods=['POST'])
+def Register():
+    try:
+        data = request.get_json()
+        csrf = request.headers.get("csrf","")
+        
+        if csrf not in csrfData or csrfData[csrf]["ua"] != request.headers.get("User-Agent"):
+            return {"status": "Invalid CSRF"}
+            
+        username = data.get("login")
+        password = data.get("password")
+        
+        if not username or not password:
+             return {"status": "Missing credentials"}
+
+        result = RegisterUser(username, password)
+        return {"status": result}
+    except Exception as e:
+        print(f"Register err: {str(e)}")
+        return {"status": "Error"}
+
+@user_bp.route("/check_username", methods=['POST'])
+def CheckUsername():
+    try:
+        data = request.get_json()
+        username = data.get("login")
+        if username in Accounts:
+            return {"available": False}
+        return {"available": True}
+    except:
+        return {"available": False}
+
+@user_bp.route("/login", methods=['POST'])
+def Login():
+    try:
+        data = request.get_json()
+        csrf = request.headers.get("csrf","")
+        
+        if csrf not in csrfData or csrfData[csrf]["ua"] != request.headers.get("User-Agent"):
+            return {"token": "none", "uid": "none"}
+        
+        if str(Accounts[data["login"]]["password"]) == str(bcrypt.hashpw(data["password"].encode(),Accounts["salt"].encode())):
+            del csrfData[csrf]
+            return {"token": Accounts[data["login"]]["token"], "uid": Accounts[data["login"]]["uid"]}
+        else:
+            return {"token": "none", "uid": "none"}
+    except Exception as e:
+        return {"token": "none", "uid": "none"}
+
+csrfData = {}
 @user_bp.route("/", methods=['GET'])
 def Home():
     try:
@@ -29,48 +87,18 @@ def Home():
             return redirect("/user", code=302)
     except:
         pass
-    key = ''.join(random.choice(string.ascii_letters) for i in range(8))
-    solution = random.randint(1,999)
-    tempLoginSecurity[key] = {
-        "solution": solution,
+
+    csrf = uuid.uuid4().hex
+    csrfData[csrf] = {
+        "ua": request.headers.get("User-Agent"),
         "unix": int(time.time())
     }
-    return render_template("/login/login.html", title="cvel", key=key, solution=solution, date=datetime.datetime.now())
-
-def loginKeysExpiryCheck():
-    while True:
-        try:
-            time.sleep(25)
-            tempToDelete = []
-            for x in tempLoginSecurity:
-                handle = tempLoginSecurity[x]
-                if (int(time.time())-handle["unix"]) >= 900:
-                    tempToDelete.append(x)
-            
-            for x in tempToDelete:
-                del tempLoginSecurity[x]
-        except:
-            pass
-
-#threading.Thread(target=loginKeysExpiryCheck, args=()).start()
-
-@user_bp.route("/login", methods=['POST'])
-def Login():
-    try:
-        data = request.get_json()
-        if str(Accounts[data["login"]]["password"]) == str(bcrypt.hashpw(data["password"].encode(), b"$2b$12$BfgXYoiUENZovKzwqYy48OMPRG9kIhc7Kt07DBcQQcmExk/oUZxHi")) and int(tempLoginSecurity[data["key"]]["solution"])-1 == int(data["solution"]):
-            del tempLoginSecurity[data["key"]] # Valid only once
-            return {"token": Accounts[data["login"]]["token"], "uid": Accounts[data["login"]]["uid"]}
-        else:
-            return {"token": "none", "uid": "none"}
-    except Exception as e:
-        return {"token": "none", "uid": "none"}
+    return render_template("/login/login.html", title="Auth", csrf=csrf, date=datetime.datetime.now())
 
 @user_bp.route("/set/wallpaper",methods=["POST"])
 def setWallpaper():
     global Accounts
     login = request.cookies.getlist('login')[0]
-    token = request.cookies.getlist('token')[0]
     uid = request.cookies.getlist('uid')[0]
     data = request.get_json()
 
@@ -83,3 +111,20 @@ def setWallpaper():
             return make_response(jsonify({"error": "Unauthorized"}), 401)
     else:
         return make_response(jsonify({"error": "File name expected"}), 403)
+
+def csrfExpiryCheck():
+    while True:
+        try:
+            time.sleep(30)
+            tempToDelete = []
+            for x in csrfData:
+                handle = csrfData[x]
+                if (int(time.time())-handle["unix"]) >= 600:
+                    tempToDelete.append(x)
+            
+            for x in tempToDelete:
+                del csrfData[x]
+        except:
+            pass
+
+threading.Thread(target=csrfExpiryCheck, args=()).start()
