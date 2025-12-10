@@ -169,7 +169,7 @@ def _upsert_file_record(login: str, name: str, ftype: str, size: str):
             Accounts[login]["files"][i]["last_change"] = datetime.datetime.today().strftime('%Y-%m-%d %H:%M')
             updateJson()
             return "Updated"
-    file_data = {"file": name, "type": ftype, "size": size, "last_change": datetime.datetime.today().strftime('%Y-%m-%d %H:%M')}
+    file_data = {"file": name, "type": ftype, "size": size, "last_change": datetime.datetime.today().strftime('%Y-%m-%d %H:%M'), "uuid": str(uuid.uuid4())}
     Accounts[login]["files"].append(file_data)
     updateJson()
     return jsonify(file_data)
@@ -226,7 +226,7 @@ def get_file(file):
         return make_response(jsonify({"error": "Invalid path"}), 400)
 
     if "." in filename:
-        file_type = filename.split(".")[-1]
+        file_type = filename.split(".")[-1].lower()
         if file_type in file_types:
             file_type = file_types[file_type]
         else:
@@ -261,7 +261,7 @@ def upload_file():
             if 'file' not in request.files:
                 data = request.get_json()
                 if "." in data["file"]:
-                    file_type = data["file"].split(".")[-1]
+                    file_type = data["file"].split(".")[-1].lower()
                     if file_type in file_types:
                         file_type = file_types[file_type]
                     else:
@@ -288,7 +288,7 @@ def upload_file():
                 file.save(file_path)
 
                 if "." in file.filename:
-                    file_type = file.filename.split(".")[-1]
+                    file_type = file.filename.split(".")[-1].lower()
                     if file_type in file_types:
                         file_type = file_types[file_type]
                     else:
@@ -464,14 +464,6 @@ def _human_size(num_bytes: int):
 def _entry_name(info):
     return getattr(info, 'filename', getattr(info, 'name', ''))
 
-def _is_dir_generic(info, file_type: str):
-    try:
-        if file_type == 'tar':
-            return info.isdir()
-        return info.is_dir()
-    except Exception:
-        return False
-
 def _size_of(info, file_type: str):
     try:
         if file_type in ('zip', 'rar'):
@@ -546,9 +538,6 @@ def _sanitize_rel_path(rel: str) -> str:
     return '/'.join(safe_parts)
 
 def _extract_rar_external_folder(archive_path: str, prefix: str, final_path: str) -> bool:
-    """Extract a folder prefix from a RAR archive into final_path using 7-Zip/UnRAR in one shot.
-    Returns True on success, False otherwise.
-    """
     import tempfile
     tmpdir = tempfile.mkdtemp(prefix='rar_bulk_')
     ok = False
@@ -643,7 +632,7 @@ def _record_tree(login: str, root_rel: str, now: str):
     files = Accounts[login]["files"]
     folder_key = root_rel.rstrip('/') + '/'
     if not any((x.get('file') == folder_key) for x in files):
-        files.append({"file": folder_key, "type": "Folder", "size": '-', "last_change": now, "position": None})
+        _upsert_file_record(login, folder_key, 'Folder', '-')
     for dirpath, dirnames, filenames in os.walk(base_path):
         rel_dir = os.path.relpath(dirpath, _user_base())
         rel_dir = rel_dir.replace('\\', '/')
@@ -652,7 +641,7 @@ def _record_tree(login: str, root_rel: str, now: str):
         if rel_dir:
             dkey = rel_dir.rstrip('/') + '/'
             if not any((x.get('file') == dkey) for x in files):
-                files.append({"file": dkey, "type": "Folder", "size": '-', "last_change": now, "position": None})
+                _upsert_file_record(login, dkey, 'Folder', '-')
         for fn in filenames:
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, _user_base()).replace('\\', '/')
@@ -666,7 +655,7 @@ def _record_tree(login: str, root_rel: str, now: str):
                 if '/' in rel:
                     existing['position'] = None
             else:
-                files.append({"file": rel, "type": ftype, "size": size, "last_change": now, "position": None})
+                _upsert_file_record(login, rel, ftype, size)
 
 @files_bp.route('/folders/create', methods=['POST'])
 def create_folder():
@@ -1364,13 +1353,13 @@ def extract_from_archive():
         if is_dir:
             folder_key = final_rel.rstrip('/') + '/'
             if not any((x.get('file') == folder_key) for x in files):
-                files.append({"file": folder_key, "type": "Folder", "size": '-', "last_change": now, "position": None})
+                _upsert_file_record(login, folder_key, 'Folder', '-')
             if 'bulk_ok' in locals() and bulk_ok:
                 _record_tree(login, final_rel.rstrip('/') + '/', now)
             else:
                 for d in sorted(created_dirs):
                     if not any((x.get('file') == d) for x in files):
-                        files.append({"file": d, "type": "Folder", "size": '-', "last_change": now, "position": None})
+                        _upsert_file_record(login, d, 'Folder', '-')
                 for rel in written_files:
                     try:
                         file_size = getFileSize(_user_file_path(rel))
@@ -1378,14 +1367,7 @@ def extract_from_archive():
                         file_size = '-'
                     ext = rel.rsplit('.', 1)[-1].lower() if '.' in rel else ''
                     ftype = file_types.get(ext, 'Unknown')
-                    existing = next((x for x in files if x.get('file') == rel), None)
-                    if existing:
-                        existing['size'] = file_size
-                        existing['last_change'] = now
-                        if '/' in rel:
-                            existing['position'] = None
-                    else:
-                        files.append({"file": rel, "type": ftype, "size": file_size, "last_change": now, "position": None})
+                    _upsert_file_record(login, rel, ftype, file_size)
         else:
             rel = final_rel
             try:
@@ -1394,14 +1376,7 @@ def extract_from_archive():
                 file_size = '-'
             ext = rel.rsplit('.', 1)[-1].lower() if '.' in rel else ''
             ftype = file_types.get(ext, 'Unknown')
-            existing = next((x for x in files if x.get('file') == rel), None)
-            if existing:
-                existing['size'] = file_size
-                existing['last_change'] = now
-                if '/' in rel:
-                    existing['position'] = None
-            else:
-                files.append({"file": rel, "type": ftype, "size": file_size, "last_change": now, "position": None})
+            _upsert_file_record(login, rel, ftype, file_size)
 
         updateJson()
         return make_response(jsonify({"status": "Extracted", "file": (final_rel if is_dir else final_rel)}), 200)
