@@ -22,4 +22,4 @@ app.register_blueprint(notepad_bp, url_prefix='/notepad')
 app.register_blueprint(admin_bp, url_prefix='/admin')
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=888, threaded=True)
+    app.run(host="0.0.0.0", port=888, threaded=True)
