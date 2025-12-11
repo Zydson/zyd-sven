@@ -3,6 +3,19 @@
 A browser-based desktop environment built with HTML, CSS, and JavaScript.
 Features draggable windows, file icons, and interactive UI elements that simulate a desktop-like experience in web browser
 
+## run
+- docker
+```bash
+docker pull zydsonek/zyd-sven:v1.3
+docker run -d -p 888:888 --name zyd-sven zydsonek/zyd-sven:v1.3
+```
+- linux/windows
+```bash
+git clone https://github.com/Zydson/zyd-sven.git
+cd zyd-sven
+pip3 install -r requirements.txt
+python main.py
+```
 ## showcase
 demo available @ [sven.zydsonek.pl](https://sven.zydsonek.pl)
 
