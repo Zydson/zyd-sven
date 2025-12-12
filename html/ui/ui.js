@@ -921,6 +921,7 @@ document.addEventListener("contextmenu", (event)=>{
     var e = document.createElement("context");
     
     const isMultiSelected = globalData["selectedFiles"].size > 1;
+    const archiveLabel = isMultiSelected ? `Archive (${globalData["selectedFiles"].size} files)` : 'Archive';
     const removeLabel = isMultiSelected ? `Remove (${globalData["selectedFiles"].size} files)` : 'Remove';
     const downloadLabel = isMultiSelected ? `Download (${globalData["selectedFiles"].size} files)` : 'Download';
 
@@ -947,7 +948,7 @@ document.addEventListener("contextmenu", (event)=>{
         menuHTML += `<button onclick='Frename("${id}")'>Rename</button>`;
     }
     menuHTML += `<button onclick='${isMultiSelected ? "FremoveMulti()" : `Fremove("${id}")` }'>${removeLabel}</button>`;
-    
+    menuHTML += `<button onclick='${isMultiSelected ? "FarchiveMulti()" : `Farchive("${id}")` }'>${archiveLabel}</button>`;
     e.innerHTML = menuHTML;
     
     if (extension=="Image" && !isMultiSelected) {
@@ -1466,6 +1467,33 @@ async function FremoveMulti() {
   }
   saveFilePositions();
 };
+
+async function Farchive(file) {
+  const filesToArchive = globalData["selectedFiles"].size > 0 ? Array.from(globalData["selectedFiles"]) : [file];
+  await createArchive(filesToArchive);
+}
+
+async function FarchiveMulti() {
+  const filesToArchive = Array.from(globalData["selectedFiles"]);
+  await createArchive(filesToArchive);
+}
+
+async function createArchive(files) {
+  window.showBusyOverlay('Archiving...');
+  try {
+    const response = await post("files/archive/create", { files: files });
+    const data = JSON.parse(response);
+    if (data && data.status === "Created") {
+      await Frefresh();
+    } else {
+      alert(data.error || "Failed to create archive");
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    document.getElementById('busyOverlay')?.remove();
+  }
+}
 
 function hideContext() {
   try {
