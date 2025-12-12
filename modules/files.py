@@ -1385,3 +1385,67 @@ def extract_from_archive():
         import traceback
         traceback.print_exc()
         return make_response(jsonify({"error": "Failed to extract"}), 500)
+
+@files_bp.route('/archive/create', methods=['POST'])
+def create_archive():
+    try:
+        if not allowed(request):
+            return make_response(jsonify({"error": "Unauthorized"}), 401)
+
+        data = request.get_json() or {}
+        files_to_archive = data.get('files', [])
+        if not files_to_archive:
+            return make_response(jsonify({"error": "No files selected"}), 400)
+
+        login = request.cookies.get('login')
+        base_dir = _user_base()
+        
+        if len(files_to_archive) == 1:
+            first_file = files_to_archive[0]
+            base_name = first_file.rstrip('/')
+            archive_name = f"{base_name}.zip"
+        else:
+            archive_name = "archive.zip"
+            
+        n = 1
+        stem = archive_name.rsplit('.', 1)[0]
+        ext = ".zip"
+        while os.path.exists(os.path.join(base_dir, archive_name)):
+            archive_name = f"{stem} ({n}){ext}"
+            n += 1
+            
+        archive_path = os.path.join(base_dir, archive_name)
+        
+        with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=8) as zf:
+            for fname in files_to_archive:
+                full_path = _user_file_path(fname)
+                if not os.path.exists(full_path):
+                    continue
+                    
+                if os.path.isdir(full_path):
+                    root_arcname = fname.rstrip('/')
+                    for root, dirs, files in os.walk(full_path):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            rel_path = os.path.relpath(file_path, full_path)
+                            arcname = os.path.join(root_arcname, rel_path)
+                            zf.write(file_path, arcname.replace(os.sep, '/'))
+                        for d in dirs:
+                            dir_path = os.path.join(root, d)
+                            rel_path = os.path.relpath(dir_path, full_path)
+                            arcname = os.path.join(root_arcname, rel_path)
+                            zfi = zipfile.ZipInfo(arcname.replace(os.sep, '/') + '/')
+                            zf.writestr(zfi, '')
+                else:
+                    zf.write(full_path, fname)
+
+        size = getFileSize(archive_path)
+        _upsert_file_record(login, archive_name, 'Archive', size)
+        
+        return make_response(jsonify({"status": "Created", "file": archive_name}), 200)
+
+    except Exception as e:
+        print(f"[ERR] files/archive/create - {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return make_response(jsonify({"error": "Failed to create archive"}), 500)
