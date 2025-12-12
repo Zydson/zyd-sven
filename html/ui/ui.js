@@ -921,6 +921,7 @@ document.addEventListener("contextmenu", (event)=>{
     var e = document.createElement("context");
     
     const isMultiSelected = globalData["selectedFiles"].size > 1;
+    const archiveLabel = isMultiSelected ? `Archive (${globalData["selectedFiles"].size} files)` : 'Archive';
     const removeLabel = isMultiSelected ? `Remove (${globalData["selectedFiles"].size} files)` : 'Remove';
     const downloadLabel = isMultiSelected ? `Download (${globalData["selectedFiles"].size} files)` : 'Download';
 
@@ -947,7 +948,7 @@ document.addEventListener("contextmenu", (event)=>{
         menuHTML += `<button onclick='Frename("${id}")'>Rename</button>`;
     }
     menuHTML += `<button onclick='${isMultiSelected ? "FremoveMulti()" : `Fremove("${id}")` }'>${removeLabel}</button>`;
-    
+    menuHTML += `<button onclick='${isMultiSelected ? "FarchiveMulti()" : `Farchive("${id}")` }'>${archiveLabel}</button>`;
     e.innerHTML = menuHTML;
     
     if (extension=="Image" && !isMultiSelected) {
@@ -965,10 +966,16 @@ document.addEventListener("contextmenu", (event)=>{
     
     var e = document.createElement("context");
     e.innerHTML = `
-      <button class="context-create-btn">Create file</button>
-      <button class="context-create-folder-btn">Create folder</button>
-      <button onclick='document.getElementById("file_upload").click()'>Upload</button>
       <button onclick='Frefresh()'>Refresh</button>
+      <div class="new-container">
+        <button class="context-new-btn">New <span class="context-arrow"></span></button>
+        <div class="context-submenu">
+          <button class="context-create-folder-btn">Folder</button>
+          <button class="context-create-btn">Text document</button>
+          <button class="context-create-file-btn">File</button>
+        </div>
+      </div>
+      <button onclick='document.getElementById("file_upload").click()'>Upload</button>
     `;
     e.className = 'context-menu';
     e.style.left = event.clientX + "px";
@@ -976,10 +983,13 @@ document.addEventListener("contextmenu", (event)=>{
     document.getElementById("wallpaper").appendChild(e);
     
     e.querySelector('.context-create-btn').addEventListener('click', function() {
-      Fcreate();
+      Fcreate('txt');
     });
     e.querySelector('.context-create-folder-btn').addEventListener('click', function() {
       FcreateFolder();
+    });
+    e.querySelector('.context-create-file-btn').addEventListener('click', function() {
+      Fcreate();
     });
   };
 });
@@ -1247,12 +1257,12 @@ async function FdownloadMulti() {
   }
 };
 
-async function createNewItem(type) {
+async function createNewItem(type, defaultExt = '') {
   hideContext();
   
   const tempName = `new_${type}_${Date.now()}`;
-  const tempType = type === 'folder' ? 'Folder' : 'Unknown';
-  const displayName = type === 'folder' ? 'new_folder' : 'new_file';
+  const tempType = type === 'folder' ? 'Folder' : (defaultExt === 'txt' ? 'Text document' : 'Unknown');
+  const displayName = type === 'folder' ? 'new_folder' : (defaultExt ? `new_file.${defaultExt}` : 'new_file');
   const sizeText = type === 'folder' ? '-' : '0 B';
   
   const el = document.createElement("file");
@@ -1289,7 +1299,7 @@ async function createNewItem(type) {
   const img = el.querySelector('img[extension][data-name]');
   const tooltip = el.querySelector('div.tooltip');
   
-  const input = createEditableInput(span);
+  const input = createEditableInput(span, displayName, !!defaultExt);
   
   let finished = false;
   
@@ -1415,8 +1425,8 @@ async function createNewItem(type) {
   document.addEventListener('mousedown', outsideClickHandler, true);
 }
 
-async function Fcreate() {
-  await createNewItem('file');
+async function Fcreate(defaultExt = '') {
+  await createNewItem('file', defaultExt);
 }
 
 async function FcreateFolder() {
@@ -1457,6 +1467,33 @@ async function FremoveMulti() {
   }
   saveFilePositions();
 };
+
+async function Farchive(file) {
+  const filesToArchive = globalData["selectedFiles"].size > 0 ? Array.from(globalData["selectedFiles"]) : [file];
+  await createArchive(filesToArchive);
+}
+
+async function FarchiveMulti() {
+  const filesToArchive = Array.from(globalData["selectedFiles"]);
+  await createArchive(filesToArchive);
+}
+
+async function createArchive(files) {
+  window.showBusyOverlay('Archiving...');
+  try {
+    const response = await post("files/archive/create", { files: files });
+    const data = JSON.parse(response);
+    if (data && data.status === "Created") {
+      await Frefresh();
+    } else {
+      alert(data.error || "Failed to create archive");
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    document.getElementById('busyOverlay')?.remove();
+  }
+}
 
 function hideContext() {
   try {
