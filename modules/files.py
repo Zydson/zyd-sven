@@ -144,6 +144,7 @@ file_types = {
     "wav": "Audio",
     "ogg": "Audio",
     "m4a": "Audio",
+    "pdf": "PDF",
 }
 
 def _user_base():
@@ -751,6 +752,74 @@ def list_folder():
         print(f"[ERR] folders/list - {str(e)}")
         return make_response(jsonify({"error": "Failed to list folder"}), 500)
 
+@files_bp.route('/copy', methods=['POST'])
+def copy_file():
+    try:
+        if not allowed(request):
+            return make_response(jsonify({"error": "Unauthorized"}), 401)
+        data = request.get_json() or {}
+        old = (data.get('old') or '').strip()
+        new = (data.get('new') or '').strip()
+        if not old or not new:
+            return make_response(jsonify({"error": "Invalid copy"}), 400)
+        try:
+            old_rel = _safe_norm_path(old)
+            new_rel = _safe_norm_path(new)
+        except Exception:
+            return make_response(jsonify({"error": "Invalid path"}), 400)
+
+        old_path = _user_file_path(old_rel)
+        new_path = _user_file_path(new_rel)
+        
+        if not os.path.exists(old_path):
+            return make_response(jsonify({"error": "Source not found"}), 404)
+
+        is_dir = os.path.isdir(old_path)
+        
+        if os.path.exists(new_path):
+            base_rel = new_rel.rstrip('/') if is_dir else new_rel
+            parent_rel = posixpath.dirname(base_rel)
+            base_name = posixpath.basename(base_rel)
+            stem = base_name
+            ext = ''
+            if not is_dir and '.' in base_name:
+                stem, ext = base_name.rsplit('.', 1)
+                ext = '.' + ext
+            candidate_rel = base_rel
+            n = 1
+            while os.path.exists(_user_file_path(candidate_rel)):
+                candidate_name = f"{stem} ({n}){ext}"
+                candidate_rel = posixpath.join(parent_rel, candidate_name) if parent_rel else candidate_name
+                n += 1
+            new_rel = candidate_rel
+            new_path = _user_file_path(new_rel)
+
+        if is_dir:
+            shutil.copytree(old_path, new_path)
+        else:
+            shutil.copy2(old_path, new_path)
+
+        login = request.cookies.get('login')
+        files = Accounts[login]["files"]
+        size = getFileSize(new_path)
+        now = datetime.datetime.today().strftime('%Y-%m-%d %H:%M')
+        external_new_name = (new_rel.rstrip('/') + '/') if is_dir else new_rel
+        
+        ext = external_new_name.rsplit('.', 1)[-1].lower() if '.' in external_new_name else ''
+        ntype = file_types.get(ext, 'Unknown')
+        if is_dir:
+            ntype = 'Folder'
+        files.append({"file": external_new_name, "type": ntype, "size": size, "last_change": now, "position": None})
+
+        if is_dir:
+            _record_tree(login, external_new_name, now)
+
+        updateJson()
+        return make_response(jsonify({"status": "Copied", "file": external_new_name}), 200)
+    except Exception as e:
+        print(f"[ERR] files/copy - {str(e)}")
+        return make_response(jsonify({"error": "Failed to copy"}), 500)
+
 @files_bp.route('/move', methods=['POST'])
 def move_file():
     try:
@@ -769,7 +838,11 @@ def move_file():
 
         old_rel_norm = old_rel.rstrip('/')
         new_rel_norm = new_rel.rstrip('/')
-        if old_rel_norm and (new_rel_norm == old_rel_norm or new_rel_norm.startswith(old_rel_norm + '/')):
+        
+        old_lower = old_rel_norm.lower()
+        new_lower = new_rel_norm.lower()
+        
+        if old_lower and (new_lower == old_lower or new_lower.startswith(old_lower + '/')):
             return make_response(jsonify({"error": "Cannot move a folder into itself"}), 400)
 
         old_path = _user_file_path(old_rel)
@@ -1396,6 +1469,8 @@ def create_archive():
         files_to_archive = data.get('files', [])
         if not files_to_archive:
             return make_response(jsonify({"error": "No files selected"}), 400)
+            
+        files_to_archive = [f.replace('\\', '/') for f in files_to_archive]
 
         login = request.cookies.get('login')
         base_dir = _user_base()
@@ -1405,7 +1480,17 @@ def create_archive():
             base_name = first_file.rstrip('/')
             archive_name = f"{base_name}.zip"
         else:
-            archive_name = "archive.zip"
+            first_dir = posixpath.dirname(files_to_archive[0].rstrip('/'))
+            same_dir = True
+            for f in files_to_archive[1:]:
+                if posixpath.dirname(f.rstrip('/')) != first_dir:
+                    same_dir = False
+                    break
+            
+            if same_dir and first_dir:
+                 archive_name = f"{first_dir}/archive.zip"
+            else:
+                 archive_name = "archive.zip"
             
         n = 1
         stem = archive_name.rsplit('.', 1)[0]

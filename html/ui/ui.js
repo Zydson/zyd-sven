@@ -9,6 +9,7 @@ globalData["extensions"] = {
   "Video": "video.png",
   "Audio": "video.png",
   "Folder": "folder.png",
+  "PDF": "pdf.png",
 };
 
 globalData["windows"] = {
@@ -18,6 +19,7 @@ globalData["windows"] = {
   "video": {"size": {"width": 600, "height": 400}, "position": {"x": "center", "y": "center"}},
   "audio": {"size": {"width": 300, "height": 200}, "position": {"x": "center", "y": "center"}},
   "code": {"size": {"width": 800, "height": 500}, "position": {"x": "center", "y": "center"}},
+  "pdf": {"size": {"width": 600, "height": 800}, "position": {"x": "center", "y": "center"}},
   "calculator": {"size": {"width": 200, "height": 300}, "position": {"x": "center", "y": "center"}},
 };
 
@@ -29,6 +31,7 @@ globalData["filePositionsByUUID"] = {}
 globalData["gridSize"] = 9;
 globalData["contextClickPosition"] = null;
 globalData["selectedFiles"] = new Set();
+globalData["clipboard"] = null;
 
 const tempData = JSON.parse(window.localStorage.getItem("globalData"));
 
@@ -743,8 +746,9 @@ function loadFiles(files) {
     let labelHtml, tooltipHtml;
     if (d.type === 'Folder') {
       const disp = (d.file || '').replace(/\/$/, '');
-      labelHtml = `<span extension="${d.type}" uuid="${d.uuid}" data-name="${d.file}">${disp}</span>`;
-      tooltipHtml = `<div extension="${d.type}" uuid="${d.uuid}" data-name="${d.file}" class="tooltip">Name: ${disp}<br>Type: Folder<br>Size: -<br>Changed: ${d.last_change || '-'}</div>`;
+      const lab = computeDisplayNames(disp);
+      labelHtml = `<span extension="${d.type}" uuid="${d.uuid}" data-name="${d.file}">${lab.name}</span>`;
+      tooltipHtml = `<div extension="${d.type}" uuid="${d.uuid}" data-name="${d.file}" class="tooltip">Name: ${lab.nameL}<br>Type: Folder<br>Size: -<br>Changed: ${d.last_change || '-'}</div>`;
     } else {
       const lab = computeDisplayNames(d.file);
       labelHtml = `<span extension="${d.type}" uuid="${d.uuid}" data-name="${d.file}">${lab.name}</span>`;
@@ -914,11 +918,27 @@ document.addEventListener("contextmenu", (event)=>{
 
   hideContext();
   event.preventDefault();
-  if (event.target.hasAttribute("data-name")) {
+  
+  const target = event.target.closest('[data-name]');
+  const folderWin = event.target.closest('.folder-window');
+  const isDesktop = event.target.getAttribute("id")=="wallpaper" || event.target.getAttribute("id")=="Files";
+  
+  if (target) {
     document.documentElement.style.setProperty('--tooltip-display', 'none');
-    var id = event.target.getAttribute("data-name");
-    var extension = event.target.getAttribute("extension");
+    var id = target.getAttribute("data-name");
+    var extension = target.getAttribute("extension");
     var e = document.createElement("context");
+    
+    if (!globalData["selectedFiles"].has(id)) {
+        if (!event.ctrlKey) {
+            clearSelection();
+            globalData["selectedFiles"].add(id);
+            document.querySelectorAll(`[data-name="${id}"]`).forEach(el => el.classList.add('selected'));
+        } else {
+            globalData["selectedFiles"].add(id);
+            document.querySelectorAll(`[data-name="${id}"]`).forEach(el => el.classList.add('selected'));
+        }
+    }
     
     const isMultiSelected = globalData["selectedFiles"].size > 1;
     const archiveLabel = isMultiSelected ? `Archive (${globalData["selectedFiles"].size} files)` : 'Archive';
@@ -929,7 +949,7 @@ document.addEventListener("contextmenu", (event)=>{
     if (isMultiSelected) {
       try {
         for (const fname of globalData["selectedFiles"]) {
-          const el = document.querySelector(`file[data-name="${fname}"]`);
+          const el = document.querySelector(`[data-name="${fname}"]`);
           if (el && el.getAttribute('extension') === 'Folder') { hasFolderSelected = true; break; }
         }
       } catch {}
@@ -941,6 +961,9 @@ document.addEventListener("contextmenu", (event)=>{
     if (!isMultiSelected) {
         menuHTML += `<button onclick='Fopen("${id}", "${extension}")'>Open</button>`;
     }
+    
+    menuHTML += `<button onclick='${isMultiSelected ? "Fcopy()" : `Fcopy("${id}")` }'>Copy</button>`;
+    
     if (!hasFolderSelected) {
       menuHTML += `<button onclick='${isMultiSelected ? "FdownloadMulti()" : `Fdownload("${id}")` }'>${downloadLabel}</button>`;
     }
@@ -954,17 +977,29 @@ document.addEventListener("contextmenu", (event)=>{
     if (extension=="Image" && !isMultiSelected) {
       e.innerHTML = e.innerHTML+`<button onclick='Fsetwallpaper("${id}")'>Set as wallpaper</button>`;
     };
-    e.setAttribute("data-name",id);
-    document.getElementById(`F${id}`).appendChild(e);
-  } else if (event.target.getAttribute("id")=="wallpaper" || event.target.getAttribute("id")=="Files") {
-    const filesContainer = document.getElementById("Files");
-    const containerRect = filesContainer.getBoundingClientRect();
-    const clickX = event.clientX - containerRect.left;
-    const clickY = event.clientY - containerRect.top;
     
-    globalData["contextClickPosition"] = { x: clickX, y: clickY };
+    e.className = 'context-menu';
+    e.style.left = event.clientX + "px";
+    e.style.top = event.clientY + "px";
+    document.body.appendChild(e);
+    
+  } else if (isDesktop || folderWin) {
+    if (isDesktop) {
+        const filesContainer = document.getElementById("Files");
+        const containerRect = filesContainer.getBoundingClientRect();
+        const clickX = event.clientX - containerRect.left;
+        const clickY = event.clientY - containerRect.top;
+        globalData["contextClickPosition"] = { x: clickX, y: clickY };
+    } else {
+        globalData["contextClickPosition"] = null;
+    }
     
     var e = document.createElement("context");
+    let pasteBtn = '';
+    if (globalData["clipboard"] && globalData["clipboard"].files.size > 0) {
+        pasteBtn = `<button onclick='Fpaste()'>Paste</button>`;
+    }
+    
     e.innerHTML = `
       <button onclick='Frefresh()'>Refresh</button>
       <div class="new-container">
@@ -975,12 +1010,13 @@ document.addEventListener("contextmenu", (event)=>{
           <button class="context-create-file-btn">File</button>
         </div>
       </div>
+      ${pasteBtn}
       <button onclick='document.getElementById("file_upload").click()'>Upload</button>
     `;
     e.className = 'context-menu';
     e.style.left = event.clientX + "px";
     e.style.top = event.clientY + "px";
-    document.getElementById("wallpaper").appendChild(e);
+    document.body.appendChild(e);
     
     e.querySelector('.context-create-btn').addEventListener('click', function() {
       Fcreate('txt');
@@ -1207,6 +1243,8 @@ async function Fopen(file, extension, key, options) {
     openArchive(file,key);
   } else if (extension == "Folder") {
     openFolder(file, key);
+  } else if (extension == "PDF") {
+    openPDF(isFromArchive ? url : file, key, fileName);
   } else {
     prompt("This file type is not supported","Error","Ok");
   }
@@ -1467,6 +1505,59 @@ async function FremoveMulti() {
   }
   saveFilePositions();
 };
+
+async function Fcopy(file) {
+  const files = globalData["selectedFiles"].size > 0 ? Array.from(globalData["selectedFiles"]) : (file ? [file] : []);
+  if (files.length === 0) return;
+  globalData["clipboard"] = { operation: 'copy', files: new Set(files) };
+}
+
+async function Fpaste() {
+  if (!globalData["clipboard"] || globalData["clipboard"].files.size === 0) return;
+  
+  let destPath = '';
+  let targetWin = null;
+  
+  const focusedWin = document.querySelector('.winbox.focus');
+  if (focusedWin) {
+     const content = focusedWin.querySelector('.folder-window');
+     if (content) {
+       destPath = content.dataset.path || '';
+       targetWin = content;
+     }
+  }
+  
+  const files = Array.from(globalData["clipboard"].files);
+  const op = globalData["clipboard"].operation;
+  
+  window.showBusyOverlay('Pasting...');
+  try {
+    for (const file of files) {
+      const fileName = file.split('/').pop();
+      let targetPath = destPath ? `${destPath}/${fileName}` : fileName;
+      
+      if (op === 'copy') {
+        await post('files/copy', { old: file, new: targetPath });
+      } else if (op === 'cut') {
+        await post('files/move', { old: file, new: targetPath });
+      }
+    }
+    
+    if (op === 'cut') {
+      globalData["clipboard"] = null;
+    }
+    
+    await Frefresh();
+    if (targetWin) {
+        const event = new CustomEvent('folder:refresh', { detail: { path: destPath } });
+        targetWin.dispatchEvent(event);
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    document.getElementById('busyOverlay')?.remove();
+  }
+}
 
 async function Farchive(file) {
   const filesToArchive = globalData["selectedFiles"].size > 0 ? Array.from(globalData["selectedFiles"]) : [file];
@@ -3057,6 +3148,7 @@ async function openFolder(folderPath, key) {
   let currentFiles = [];
   let selectedRows = new Set();
   e.dataset.path = currentPath;
+  e.selectedRows = selectedRows;
 
   if (key == null) {
     key = (Math.random() + 1).toString(36).substring(7);
@@ -3077,16 +3169,18 @@ async function openFolder(folderPath, key) {
     }
     currentFiles.forEach(f => {
       let icon;
+      let fileType;
       if (f.is_dir) {
         icon = '<img src="/static/icons/folder.png" class="archive-icon" style="width:14px;height:14px;">';
+        fileType = 'Folder';
       } else {
         const fileName = (f.display && f.display.length > 0) ? f.display : (f.name ? f.name.split('/').pop() : '');
-        const fileType = getTypeForFilename(fileName);
+        fileType = getTypeForFilename(fileName);
         const iconName = globalData['extensions'][fileType] || 'unknown_.png';
         icon = `<img src="/static/icons/${iconName}" class="archive-icon" style="width:14px;height:14px;">`;
       }
       const label = (f.display && f.display.length > 0) ? f.display : (f.name ? (f.name.endsWith('/') ? f.name.slice(0, -1).split('/').pop() : f.name.split('/').pop()) : '');
-      table += `<tr data-path="${f.name}" data-isdir="${f.is_dir}"><td>${icon}${label}</td><td>${f.size}</td><td>${f.modified}</td></tr>`;
+      table += `<tr data-path="${f.name}" data-name="${f.name}" extension="${fileType}" data-isdir="${f.is_dir}"><td>${icon}${label}</td><td>${f.size}</td><td>${f.modified}</td></tr>`;
     });
     table += '</tbody></table></div>';
     e.innerHTML = table;
@@ -3104,6 +3198,7 @@ async function openFolder(folderPath, key) {
       tdName.innerHTML = icon;
       const input = document.createElement('input');
       input.type = 'text';
+      input.value = type === 'folder' ? 'new_folder' : 'new_file';
       input.placeholder = type === 'folder' ? 'new_folder' : 'new_file';
       input.style.display = 'inline-block';
       input.style.minWidth = '100px';
@@ -3277,6 +3372,23 @@ async function openFolder(folderPath, key) {
             const ftype = getTypeForFilename(fname);
             addBtn('Open', async () => { Fopen(p, ftype); });
           }
+          
+          addBtn('Copy', async () => {
+             if (isMultiSelected) {
+                 globalData["selectedFiles"] = new Set(selectedRows);
+                 Fcopy();
+             } else {
+                 Fcopy(p);
+             }
+          });
+          
+          if (globalData["clipboard"] && globalData["clipboard"].files.size > 0) {
+              addBtn('Paste', async () => {
+                  await Fpaste();
+                  await renderPath(currentPath);
+              });
+          }
+
           if (!hasFolderSelected) {
             if (isMultiSelected) {
               addBtn(`Download (${selectedRows.size})`, async () => {
@@ -3290,8 +3402,7 @@ async function openFolder(folderPath, key) {
           if (!isMultiSelected) {
             addBtn('Rename', async () => { await FrenameInPath(p, key); });
           }
-          addBtn('New file', async () => { await createNewInFolder('file'); });
-          addBtn('New folder', async () => { await createNewInFolder('folder'); });
+
           if (isMultiSelected) {
             addBtn(`Remove (${selectedRows.size})`, async () => {
               const sel = Array.from(selectedRows);
@@ -3305,6 +3416,21 @@ async function openFolder(folderPath, key) {
               await Frefresh();
               try { await renderPath(currentPath); } catch {}
             });
+          }
+          
+          if (isMultiSelected) {
+             addBtn(`Archive (${selectedRows.size})`, async () => {
+                 globalData["selectedFiles"] = new Set(selectedRows);
+                 await FarchiveMulti();
+                 await Frefresh();
+                 try { await renderPath(currentPath); } catch {}
+             });
+          } else {
+             addBtn('Archive', async () => {
+                 await Farchive(p);
+                 await Frefresh();
+                 try { await renderPath(currentPath); } catch {}
+             });
           }
 
           menuEl.style.position = 'fixed';
@@ -3521,14 +3647,58 @@ async function openFolder(folderPath, key) {
         ev.preventDefault(); ev.stopPropagation();
         hideContext();
         const menuEl = document.createElement('context');
-        const addBtn = (label, handler) => {
-          const b = document.createElement('button');
-          b.textContent = label;
-          b.addEventListener('click', async (e2) => { e2.stopPropagation(); hideContext(); await handler(); });
-          menuEl.appendChild(b);
-        };
-        addBtn('New file', async () => { await createNewInFolder('file'); });
-        addBtn('New folder', async () => { await createNewInFolder('folder'); });
+        
+        let pasteBtn = '';
+        if (globalData["clipboard"] && globalData["clipboard"].files.size > 0) {
+            pasteBtn = `<button class="context-paste-btn">Paste</button>`;
+        }
+
+        menuEl.innerHTML = `
+          <button class="context-refresh-btn">Refresh</button>
+          <div class="new-container">
+            <button class="context-new-btn">New <span class="context-arrow"></span></button>
+            <div class="context-submenu">
+              <button class="context-create-folder-btn">Folder</button>
+              <button class="context-create-btn">Text document</button>
+              <button class="context-create-file-btn">File</button>
+            </div>
+          </div>
+          ${pasteBtn}
+        `;
+        
+        menuEl.querySelector('.context-refresh-btn').addEventListener('click', async (e2) => {
+            e2.stopPropagation();
+            hideContext();
+            await renderPath(currentPath);
+        });
+        
+        menuEl.querySelector('.context-create-folder-btn').addEventListener('click', async (e2) => {
+            e2.stopPropagation();
+            hideContext();
+            await createNewInFolder('folder');
+        });
+        
+        menuEl.querySelector('.context-create-btn').addEventListener('click', async (e2) => {
+            e2.stopPropagation();
+            hideContext();
+            await createNewInFolder('file'); 
+        });
+        
+        menuEl.querySelector('.context-create-file-btn').addEventListener('click', async (e2) => {
+            e2.stopPropagation();
+            hideContext();
+            await createNewInFolder('file');
+        });
+        
+        if (pasteBtn) {
+            menuEl.querySelector('.context-paste-btn').addEventListener('click', async (e2) => {
+                e2.stopPropagation();
+                hideContext();
+                await Fpaste();
+                await renderPath(currentPath);
+            });
+        }
+
         menuEl.style.position = 'fixed';
         menuEl.style.left = ev.clientX + 'px';
         menuEl.style.top = ev.clientY + 'px';
@@ -3975,4 +4145,118 @@ window.addEventListener('resize', function() {
       }
     });
   }, 150);
+});
+
+async function openPDF(file, key, title) {
+  var e = document.createElement("div");
+  var windowData = getWindowData("pdf", key, file);
+
+  if (key == null) {
+    key = (Math.random() + 1).toString(36).substring(7);
+  }
+
+  if (!globalData["openedWindows"][key]) {
+    globalData["openedWindows"][key] = {
+      "file": file,
+      "extension": "PDF",
+      "size": windowData.size,
+      "position": windowData.position
+    };
+    saveOpenedWindowsState();
+  }
+
+  const pdfUrl = file.startsWith('files/archive/get/') ? file : `/files/get/${file}`;
+  const windowTitle = title || file;
+
+  e.innerHTML = `
+    <iframe src="${pdfUrl}" style="width: 100%; height: 100%; border: none;"></iframe>
+  `;
+
+  new WinBox({
+    title: windowTitle,
+    width: windowData.width,
+    height: windowData.height,
+    top: 50,
+    minheight: 200,
+    minwidth: 300,
+    x: windowData.x,
+    y: windowData.y,
+    class: ["modern", "no-full"],
+    right: 0,
+    bottom: 50,
+    left: 0,
+    mount: e,
+    onfocus: function () {
+      this.setBackground("#444");
+      e.style.pointerEvents = "auto";
+    },
+    onblur: function () {
+      this.setBackground("#333");
+      e.style.pointerEvents = "none";
+    },
+    onclose: function () {
+      delete globalData["openedWindows"][key];
+      saveOpenedWindowsState();
+    },
+    onmove: function () {
+      if (globalData["openedWindows"][key]) {
+        globalData["openedWindows"][key]["position"] = {x: this.x, y: this.y};
+        saveOpenedWindowsState();
+      }
+    },
+    onresize: function () {
+      if (globalData["openedWindows"][key]) {
+        globalData["openedWindows"][key]["size"] = {width: this.width, height: this.height};
+        saveOpenedWindowsState();
+      }
+    }
+  });
+}
+document.addEventListener('keydown', async function(e) {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  if (e.key === 'Delete') {
+      const focusedWin = document.querySelector('.winbox.focus');
+      if (focusedWin) {
+          const folderWin = focusedWin.querySelector('.folder-window');
+          if (folderWin && folderWin.selectedRows && folderWin.selectedRows.size > 0) {
+              const innerId = folderWin.id;
+              const winKey = innerId.replace('folder-win-', '');
+              
+              const sel = Array.from(folderWin.selectedRows);
+              
+              for (const s of sel) { await FremoveInPath(s, winKey); }
+              const event = new CustomEvent('folder:refresh', { detail: { path: folderWin.dataset.path } });
+              folderWin.dispatchEvent(event);
+              
+              return;
+          }
+      }
+
+      if (globalData['selectedFiles'].size > 0) {
+          if (globalData['selectedFiles'].size > 1) {
+              FremoveMulti();
+          } else {
+              const file = Array.from(globalData['selectedFiles'])[0];
+              Fremove(file);
+          }
+      }
+  }
+
+  if (e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
+    const focusedWin = document.querySelector('.winbox.focus');
+    if (focusedWin) {
+        const folderWin = focusedWin.querySelector('.folder-window');
+        if (folderWin && folderWin.selectedRows && folderWin.selectedRows.size > 0) {
+             globalData["selectedFiles"] = new Set(folderWin.selectedRows);
+             Fcopy();
+             return;
+        }
+    }
+    if (globalData['selectedFiles'].size > 0) {
+      Fcopy();
+    }
+  } else if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
+    Fpaste();
+  }
 });

@@ -6,8 +6,8 @@ Features draggable windows, file icons, and interactive UI elements that simulat
 ## run
 - docker
 ```bash
-docker pull zydsonek/zyd-sven:v1.4
-docker run -d -p 888:888 --name zyd-sven zydsonek/zyd-sven:v1.4
+docker pull zydsonek/zyd-sven:v1.5
+docker run -d -p 888:888 --name zyd-sven zydsonek/zyd-sven:v1.5
 ```
 - linux/windows
 ```bash
