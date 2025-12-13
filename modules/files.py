@@ -144,6 +144,7 @@ file_types = {
     "wav": "Audio",
     "ogg": "Audio",
     "m4a": "Audio",
+    "pdf": "PDF",
 }
 
 def _user_base():
