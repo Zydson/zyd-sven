@@ -9,7 +9,7 @@ globalData["extensions"] = {
   "Video": "video.png",
   "Audio": "video.png",
   "Folder": "folder.png",
-  "PDF": "notepad.png",
+  "PDF": "pdf.png",
 };
 
 globalData["windows"] = {
@@ -3989,6 +3989,16 @@ async function openPDF(file, key, title) {
     key = (Math.random() + 1).toString(36).substring(7);
   }
 
+  if (!globalData["openedWindows"][key]) {
+    globalData["openedWindows"][key] = {
+      "file": file,
+      "extension": "PDF",
+      "size": windowData.size,
+      "position": windowData.position
+    };
+    saveOpenedWindowsState();
+  }
+
   const pdfUrl = file.startsWith('files/archive/get/') ? file : `/files/get/${file}`;
   const windowTitle = title || file;
 
@@ -4023,22 +4033,16 @@ async function openPDF(file, key, title) {
       saveOpenedWindowsState();
     },
     onmove: function () {
-      globalData["openedWindows"][key]["position"] = {x: this.x, y: this.y};
-      saveOpenedWindowsState();
+      if (globalData["openedWindows"][key]) {
+        globalData["openedWindows"][key]["position"] = {x: this.x, y: this.y};
+        saveOpenedWindowsState();
+      }
     },
     onresize: function () {
-      globalData["openedWindows"][key]["size"] = {width: this.width, height: this.height};
-      saveOpenedWindowsState();
+      if (globalData["openedWindows"][key]) {
+        globalData["openedWindows"][key]["size"] = {width: this.width, height: this.height};
+        saveOpenedWindowsState();
+      }
     }
   });
-  
-  if (!globalData["openedWindows"][key]) {
-    globalData["openedWindows"][key] = {
-      "file": file,
-      "extension": "PDF",
-      "size": windowData.size,
-      "position": windowData.position
-    };
-    saveOpenedWindowsState();
-  }
 }
