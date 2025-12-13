@@ -9,6 +9,7 @@ globalData["extensions"] = {
   "Video": "video.png",
   "Audio": "video.png",
   "Folder": "folder.png",
+  "PDF": "notepad.png",
 };
 
 globalData["windows"] = {
@@ -18,6 +19,7 @@ globalData["windows"] = {
   "video": {"size": {"width": 600, "height": 400}, "position": {"x": "center", "y": "center"}},
   "audio": {"size": {"width": 300, "height": 200}, "position": {"x": "center", "y": "center"}},
   "code": {"size": {"width": 800, "height": 500}, "position": {"x": "center", "y": "center"}},
+  "pdf": {"size": {"width": 600, "height": 800}, "position": {"x": "center", "y": "center"}},
   "calculator": {"size": {"width": 200, "height": 300}, "position": {"x": "center", "y": "center"}},
 };
 
@@ -1207,6 +1209,8 @@ async function Fopen(file, extension, key, options) {
     openArchive(file,key);
   } else if (extension == "Folder") {
     openFolder(file, key);
+  } else if (extension == "PDF") {
+    openPDF(isFromArchive ? url : file, key, fileName);
   } else {
     prompt("This file type is not supported","Error","Ok");
   }
@@ -3976,3 +3980,65 @@ window.addEventListener('resize', function() {
     });
   }, 150);
 });
+
+async function openPDF(file, key, title) {
+  var e = document.createElement("div");
+  var windowData = getWindowData("pdf", key, file);
+
+  if (key == null) {
+    key = (Math.random() + 1).toString(36).substring(7);
+  }
+
+  const pdfUrl = file.startsWith('files/archive/get/') ? file : `/files/get/${file}`;
+  const windowTitle = title || file;
+
+  e.innerHTML = `
+    <iframe src="${pdfUrl}" style="width: 100%; height: 100%; border: none;"></iframe>
+  `;
+
+  new WinBox({
+    title: windowTitle,
+    width: windowData.width,
+    height: windowData.height,
+    top: 50,
+    minheight: 200,
+    minwidth: 300,
+    x: windowData.x,
+    y: windowData.y,
+    class: ["modern", "no-full"],
+    right: 0,
+    bottom: 50,
+    left: 0,
+    mount: e,
+    onfocus: function () {
+      this.setBackground("#444");
+      e.style.pointerEvents = "auto";
+    },
+    onblur: function () {
+      this.setBackground("#333");
+      e.style.pointerEvents = "none";
+    },
+    onclose: function () {
+      delete globalData["openedWindows"][key];
+      saveOpenedWindowsState();
+    },
+    onmove: function () {
+      globalData["openedWindows"][key]["position"] = {x: this.x, y: this.y};
+      saveOpenedWindowsState();
+    },
+    onresize: function () {
+      globalData["openedWindows"][key]["size"] = {width: this.width, height: this.height};
+      saveOpenedWindowsState();
+    }
+  });
+  
+  if (!globalData["openedWindows"][key]) {
+    globalData["openedWindows"][key] = {
+      "file": file,
+      "extension": "PDF",
+      "size": windowData.size,
+      "position": windowData.position
+    };
+    saveOpenedWindowsState();
+  }
+}
