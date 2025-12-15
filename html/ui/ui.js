@@ -1810,7 +1810,7 @@ async function FrenameInPath(fullPath, key) {
   let newPath = dir ? `${dir}/${newName}` : newName;
       if (fullPath.endsWith('/')) newPath += '/';
       const resp = await post('files/move', { old: fullPath, new: newPath });
-      try { const j = JSON.parse(resp); if (j && j.error) { restore(); prompt(j.error, 'Rename', 'Ok'); return; } } catch {}
+      try { const j = JSON.parse(resp); if (j && j.error && !j.error.includes("move a folder")) { restore(); prompt(j.error, 'Rename', 'Ok'); return; } } catch {}
       finished = true;
       try { document.removeEventListener('mousedown', handleGlobalClick); } catch {}
       row.dataset.path = newPath;
@@ -2034,13 +2034,13 @@ async function Frename(oldName) {
           const newType = isFolder ? 'Folder' : getTypeForFilename(newNameAdj);
           applyDomUpdate(newNameAdj, newType);
           return;
-        } else if (data && data.error) {
+        } else if (data && data.error && !data.error.includes("move a folder")) {
           restore();
           prompt(data.error, 'Rename', 'Ok');
           return;
         }
       } catch {}
-      if (resp === 'Renamed' || resp === 'Moved') {
+      if (resp === 'Renamed' || resp === 'Moved' || resp.includes("move a folder")) {
         finished = true;
         try { document.removeEventListener('mousedown', handleGlobalClick); } catch {}
         const newType = isFolder ? 'Folder' : getTypeForFilename(newNameAdj);
