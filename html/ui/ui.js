@@ -20,7 +20,6 @@ globalData["windows"] = {
   "audio": {"size": {"width": 300, "height": 200}, "position": {"x": "center", "y": "center"}},
   "code": {"size": {"width": 800, "height": 500}, "position": {"x": "center", "y": "center"}},
   "pdf": {"size": {"width": 600, "height": 800}, "position": {"x": "center", "y": "center"}},
-  "calculator": {"size": {"width": 200, "height": 300}, "position": {"x": "center", "y": "center"}},
 };
 
 globalData["mTab"] = {}
@@ -1005,8 +1004,6 @@ document.addEventListener("contextmenu", (event)=>{
         menuHTML += `<button onclick='Fopen("${id}", "${extension}")'>Open</button>`;
     }
     
-    menuHTML += `<button onclick='${isMultiSelected ? "Fcopy()" : `Fcopy("${id}")` }'>Copy</button>`;
-    
     if (!hasFolderSelected) {
       menuHTML += `<button onclick='${isMultiSelected ? "FdownloadMulti()" : `Fdownload("${id}")` }'>${downloadLabel}</button>`;
     }
@@ -1015,6 +1012,7 @@ document.addEventListener("contextmenu", (event)=>{
     }
     menuHTML += `<button onclick='${isMultiSelected ? "FremoveMulti()" : `Fremove("${id}")` }'>${removeLabel}</button>`;
     menuHTML += `<button onclick='${isMultiSelected ? "FarchiveMulti()" : `Farchive("${id}")` }'>${archiveLabel}</button>`;
+    menuHTML += `<button onclick='${isMultiSelected ? "Fcopy()" : `Fcopy("${id}")` }'>Copy</button>`;
     e.innerHTML = menuHTML;
     
     if (extension=="Image" && !isMultiSelected) {
@@ -2152,116 +2150,6 @@ async function saveNotepad(file) {
     saveFilePositions([file]);
   };
 };
-
-function openCalculator() {
-  if (document.getElementById("calcInput")) {return};
-  var e = document.createElement("div");
-  var windowData = getWindowData("calculator");
-  e.setAttribute("id","calculator");
-
-  e.innerHTML = `
-      <input id="calcInput" type="text" placeholder="0" value="0">
-      <table>
-        <tr>
-          <td></td>
-          <td onclick="calcValue('sqrt')"><span style="white-space: nowrap;">√<span style="white-space: nowrap;border-top:1px solid; padding:0 0.3em;">x</span></span></td>
-          <td onclick="calcValue('^')">x<sup>2</sup></td>
-          <td onclick="calcValue(null)"><-</td>
-        </tr>
-        <tr>
-          <td onclick="calcValue('7')">7</td>
-          <td onclick="calcValue('8')">8</td>
-          <td onclick="calcValue('9')">9</td>
-          <td onclick="calcValue('*')">x</td>
-        </tr>
-        <tr>
-          <td onclick="calcValue('4')">4</td>
-          <td onclick="calcValue('5')">5</td>
-          <td onclick="calcValue('6')">6</td>
-          <td onclick="calcValue('+')">+</td>
-        </tr>
-        <tr>
-          <td onclick="calcValue('1')">1</td>
-          <td onclick="calcValue('2')">2</td>
-          <td onclick="calcValue('3')">3</td>
-          <td onclick="calcValue('-')">-</td>
-        </tr>
-        <tr>
-          <td onclick="calcValue('C')">C</td>
-          <td onclick="calcValue('0')">0</td>
-          <td onclick="calcValue('.')">.</td>
-          <td onclick="calcValue('=')">=</td>
-        </tr>
-      </table>
-  `;
-
-  const win = new WinBox({
-    title: "Calculator",
-    width: windowData.width,
-    height: windowData.height,
-    top: 50,
-    right: 0,
-    bottom: 50,
-    minheight: 75,
-    x: windowData.x,
-    y: windowData.y,
-    left: 0,
-    mount: e,
-    onmove: (x, y) => {
-      globalData["windows"]["calculator"]["position"] = {"x": x, "y": y};
-      window.localStorage.setItem("globalData", JSON.stringify(globalData["windows"]));
-    },
-    icon: "/static/icons/calculator.png",
-    class: ["modern", "no-full", "no-min", "no-max", "no-resize"],
-    onclose: () => {
-      return false;
-    }
-   });
-
-
-  document.getElementById("calcInput").addEventListener("beforeinput", function(event) {
-    event.preventDefault();
-    calcValue(event.data);
-  });
-
-};
-
-function calcValue(value) {
-  const input = document.getElementById('calcInput');
-  try {
-    if (input.value == 'err*')  {
-      input.value = '0';
-    }
-    if (value === 'C') {
-      input.value = '0';
-    } else if (value === '=') {
-      if (input.value.length == 0) {return};
-      input.value = input.value.replaceAll("^","**");
-      input.value = eval(input.value);
-    } else if (value === null) {
-      input.value = input.value.substring(0, input.value.length - 1);
-    } else if (value === 'sqrt') {
-      if (input.value.length == 0) {return};
-      input.value = input.value.replaceAll("^","**");
-      input.value = eval(input.value);
-      input.value = Math.sqrt(input.value);
-    } else {
-      if (value === 'x') {
-        value = '*';
-      }
-      if ((value == "*" || value == "/" || value == "-" || value == "+" || value == "." || value == "^") && (input.value[input.value.length-1] == "^" || input.value[input.value.length-1] == "." || input.value[input.value.length-1] == "-" || input.value[input.value.length-1] == "+" || input.value[input.value.length-1] == "*" || input.value[input.value.length-1] == "/")) {return};
-      if (value && !/[0-9/*\-+x^.]/.test(value)) {return}
-      input.value += value;
-      if (input.value[0] === '0' && (input.value[1] !== '.' && input.value[1] !== '*' && input.value[1] !== '/' && input.value[1] !== '+' && input.value[1] !== '^')) {
-        input.value = input.value.substring(1);
-      } else if (input.value[0] == "*" || input.value[0] == "/" || input.value[0] == "+" || input.value[0] == "." || input.value[0] == "^") {
-        input.value = "0"+input.value;
-      }
-    }
-  } catch (e) {
-    input.value = 'err*';
-  };
-}
 
 function openNotepad(text,file,key) {
   var prompted = false;
@@ -3415,22 +3303,6 @@ async function openFolder(folderPath, key) {
             const ftype = getTypeForFilename(fname);
             addBtn('Open', async () => { Fopen(p, ftype); });
           }
-          
-          addBtn('Copy', async () => {
-             if (isMultiSelected) {
-                 globalData["selectedFiles"] = new Set(selectedRows);
-                 Fcopy();
-             } else {
-                 Fcopy(p);
-             }
-          });
-          
-          if (globalData["clipboard"] && globalData["clipboard"].files.size > 0) {
-              addBtn('Paste', async () => {
-                  await Fpaste();
-                  await renderPath(currentPath);
-              });
-          }
 
           if (!hasFolderSelected) {
             if (isMultiSelected) {
@@ -3474,6 +3346,22 @@ async function openFolder(folderPath, key) {
                  await Frefresh();
                  try { await renderPath(currentPath); } catch {}
              });
+          }
+
+          addBtn('Copy', async () => {
+             if (isMultiSelected) {
+                 globalData["selectedFiles"] = new Set(selectedRows);
+                 Fcopy();
+             } else {
+                 Fcopy(p);
+             }
+          });
+          
+          if (globalData["clipboard"] && globalData["clipboard"].files.size > 0) {
+              addBtn('Paste', async () => {
+                  await Fpaste();
+                  await renderPath(currentPath);
+              });
           }
 
           menuEl.style.position = 'fixed';
@@ -4061,8 +3949,6 @@ document.addEventListener("click", async (event)=> {
   };
   if (event.target.id == "menuNotepad") {
     openNotepad();
-  } else if (event.target.id == "menuCalculator") {
-    openCalculator();
   } else if (event.target.id == "power") {
     document.getElementById("menu").style.display = "none";
     document.getElementById("logout").style.display = "block";

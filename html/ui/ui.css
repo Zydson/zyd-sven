@@ -522,43 +522,11 @@ context button:hover .context-arrow {
     z-index: 1;
 }
 
-#calcInput {
-    width: 100%;
-    outline: none;
-    left: 0;
-    margin: 0;
-    padding: 0;
-    resize: none;
-
-    text-align: right;
-    height: 15%;
-    font-size: 150%;
-}
-
 table {
     width: 100%;
     height: 85%;
 }
 
-#calculator table,
-#calculator tr,
-#calculator td {
-    border: 1px solid black;
-    background-color: white;
-}
-
-#calculator tr {
-    width: 100%;
-    height: 20%;
-}
-
-#calculator td {
-    width: 25%;
-    height: 20%;
-    font-size: 1.5vh;
-    cursor: pointer;
-    text-align: center;
-}
 
 td button {
     border:none;
