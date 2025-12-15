@@ -20,7 +20,6 @@ globalData["windows"] = {
   "audio": {"size": {"width": 300, "height": 200}, "position": {"x": "center", "y": "center"}},
   "code": {"size": {"width": 800, "height": 500}, "position": {"x": "center", "y": "center"}},
   "pdf": {"size": {"width": 600, "height": 800}, "position": {"x": "center", "y": "center"}},
-  "calculator": {"size": {"width": 200, "height": 300}, "position": {"x": "center", "y": "center"}},
 };
 
 globalData["mTab"] = {}
@@ -367,6 +366,7 @@ function setupFileDragging(fileElement) {
   let preventNextClick = false;
   let draggedFiles = [];
   let clickedFileName, clickedCtrlKey;
+  let ghost = null;
   
   const onMouseDown = function(e) {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -429,6 +429,7 @@ function setupFileDragging(fileElement) {
       hasMoved = true;
       draggedFiles.forEach(df => {
         df.element.style.opacity = '0.7';
+        df.element.style.pointerEvents = 'none';
       });
     }
     
@@ -450,6 +451,46 @@ function setupFileDragging(fileElement) {
         df.element.style.left = newLeft + 'px';
         df.element.style.top = newTop + 'px';
       });
+
+      const elAt = document.elementFromPoint(e.clientX, e.clientY);
+      let targetName = null;
+      
+      const folderEl = elAt ? elAt.closest('file[extension="Folder"]') : null;
+      if (folderEl) {
+         const fid = folderEl.getAttribute('data-name');
+         const draggedSet = new Set(draggedFiles.map(df => df.originalFileName));
+         if (!draggedSet.has(fid)) {
+             targetName = fid.replace(/\/$/, '');
+         }
+      }
+      
+      if (!targetName) {
+          const folderWin = elAt ? elAt.closest('.folder-window') : null;
+          if (folderWin) {
+              targetName = (folderWin.dataset.path || '').replace(/\/$/, '') || 'Folder';
+          }
+      }
+
+      if (targetName) {
+          if (!ghost) {
+              ghost = document.createElement('div');
+              ghost.style.position = 'fixed';
+              ghost.style.zIndex = '9999';
+              ghost.style.pointerEvents = 'none';
+              ghost.style.padding = '6px 10px';
+              ghost.style.borderRadius = '6px';
+              ghost.style.background = 'rgba(30,30,30,0.9)';
+              ghost.style.color = '#fff';
+              ghost.style.fontSize = '12px';
+              ghost.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+              document.body.appendChild(ghost);
+          }
+          ghost.textContent = `Move to ${targetName}`;
+          ghost.style.left = (e.clientX + 15) + 'px';
+          ghost.style.top = (e.clientY + 15) + 'px';
+      } else {
+          if (ghost) { ghost.remove(); ghost = null; }
+      }
     }
   };
   
@@ -458,6 +499,8 @@ function setupFileDragging(fileElement) {
     
     if (e.target.closest('context')) return;
     
+    if (ghost) { ghost.remove(); ghost = null; }
+
     if (!hasMoved) {
       if (clickedCtrlKey) {
         toggleFileSelection(clickedFileName, true);
@@ -474,12 +517,11 @@ function setupFileDragging(fileElement) {
     draggedFiles.forEach(df => {
       df.element.style.zIndex = '';
       df.element.style.opacity = '';
+      df.element.style.pointerEvents = '';
     });
     
     if (hasMoved) {
-      draggedFiles.forEach(df => df.element.style.display = 'none');
       let elementAtPoint = document.elementFromPoint(e.clientX, e.clientY);
-      draggedFiles.forEach(df => df.element.style.display = '');
 
       const draggedSet = new Set(draggedFiles.map(df => df.originalFileName));
       let folderEl = elementAtPoint ? elementAtPoint.closest('file[extension="Folder"]') : null;
@@ -962,8 +1004,6 @@ document.addEventListener("contextmenu", (event)=>{
         menuHTML += `<button onclick='Fopen("${id}", "${extension}")'>Open</button>`;
     }
     
-    menuHTML += `<button onclick='${isMultiSelected ? "Fcopy()" : `Fcopy("${id}")` }'>Copy</button>`;
-    
     if (!hasFolderSelected) {
       menuHTML += `<button onclick='${isMultiSelected ? "FdownloadMulti()" : `Fdownload("${id}")` }'>${downloadLabel}</button>`;
     }
@@ -972,6 +1012,7 @@ document.addEventListener("contextmenu", (event)=>{
     }
     menuHTML += `<button onclick='${isMultiSelected ? "FremoveMulti()" : `Fremove("${id}")` }'>${removeLabel}</button>`;
     menuHTML += `<button onclick='${isMultiSelected ? "FarchiveMulti()" : `Farchive("${id}")` }'>${archiveLabel}</button>`;
+    menuHTML += `<button onclick='${isMultiSelected ? "Fcopy()" : `Fcopy("${id}")` }'>Copy</button>`;
     e.innerHTML = menuHTML;
     
     if (extension=="Image" && !isMultiSelected) {
@@ -1337,7 +1378,7 @@ async function createNewItem(type, defaultExt = '') {
   const img = el.querySelector('img[extension][data-name]');
   const tooltip = el.querySelector('div.tooltip');
   
-  const input = createEditableInput(span, displayName, !!defaultExt);
+  const input = createEditableInput(span, displayName, true);
   
   let finished = false;
   
@@ -1767,7 +1808,7 @@ async function FrenameInPath(fullPath, key) {
   let newPath = dir ? `${dir}/${newName}` : newName;
       if (fullPath.endsWith('/')) newPath += '/';
       const resp = await post('files/move', { old: fullPath, new: newPath });
-      try { const j = JSON.parse(resp); if (j && j.error) { restore(); prompt(j.error, 'Rename', 'Ok'); return; } } catch {}
+      try { const j = JSON.parse(resp); if (j && j.error && !j.error.includes("move a folder")) { restore(); prompt(j.error, 'Rename', 'Ok'); return; } } catch {}
       finished = true;
       try { document.removeEventListener('mousedown', handleGlobalClick); } catch {}
       row.dataset.path = newPath;
@@ -1991,13 +2032,13 @@ async function Frename(oldName) {
           const newType = isFolder ? 'Folder' : getTypeForFilename(newNameAdj);
           applyDomUpdate(newNameAdj, newType);
           return;
-        } else if (data && data.error) {
+        } else if (data && data.error && !data.error.includes("move a folder")) {
           restore();
           prompt(data.error, 'Rename', 'Ok');
           return;
         }
       } catch {}
-      if (resp === 'Renamed' || resp === 'Moved') {
+      if (resp === 'Renamed' || resp === 'Moved' || resp.includes("move a folder")) {
         finished = true;
         try { document.removeEventListener('mousedown', handleGlobalClick); } catch {}
         const newType = isFolder ? 'Folder' : getTypeForFilename(newNameAdj);
@@ -2109,116 +2150,6 @@ async function saveNotepad(file) {
     saveFilePositions([file]);
   };
 };
-
-function openCalculator() {
-  if (document.getElementById("calcInput")) {return};
-  var e = document.createElement("div");
-  var windowData = getWindowData("calculator");
-  e.setAttribute("id","calculator");
-
-  e.innerHTML = `
-      <input id="calcInput" type="text" placeholder="0" value="0">
-      <table>
-        <tr>
-          <td></td>
-          <td onclick="calcValue('sqrt')"><span style="white-space: nowrap;">√<span style="white-space: nowrap;border-top:1px solid; padding:0 0.3em;">x</span></span></td>
-          <td onclick="calcValue('^')">x<sup>2</sup></td>
-          <td onclick="calcValue(null)"><-</td>
-        </tr>
-        <tr>
-          <td onclick="calcValue('7')">7</td>
-          <td onclick="calcValue('8')">8</td>
-          <td onclick="calcValue('9')">9</td>
-          <td onclick="calcValue('*')">x</td>
-        </tr>
-        <tr>
-          <td onclick="calcValue('4')">4</td>
-          <td onclick="calcValue('5')">5</td>
-          <td onclick="calcValue('6')">6</td>
-          <td onclick="calcValue('+')">+</td>
-        </tr>
-        <tr>
-          <td onclick="calcValue('1')">1</td>
-          <td onclick="calcValue('2')">2</td>
-          <td onclick="calcValue('3')">3</td>
-          <td onclick="calcValue('-')">-</td>
-        </tr>
-        <tr>
-          <td onclick="calcValue('C')">C</td>
-          <td onclick="calcValue('0')">0</td>
-          <td onclick="calcValue('.')">.</td>
-          <td onclick="calcValue('=')">=</td>
-        </tr>
-      </table>
-  `;
-
-  const win = new WinBox({
-    title: "Calculator",
-    width: windowData.width,
-    height: windowData.height,
-    top: 50,
-    right: 0,
-    bottom: 50,
-    minheight: 75,
-    x: windowData.x,
-    y: windowData.y,
-    left: 0,
-    mount: e,
-    onmove: (x, y) => {
-      globalData["windows"]["calculator"]["position"] = {"x": x, "y": y};
-      window.localStorage.setItem("globalData", JSON.stringify(globalData["windows"]));
-    },
-    icon: "/static/icons/calculator.png",
-    class: ["modern", "no-full", "no-min", "no-max", "no-resize"],
-    onclose: () => {
-      return false;
-    }
-   });
-
-
-  document.getElementById("calcInput").addEventListener("beforeinput", function(event) {
-    event.preventDefault();
-    calcValue(event.data);
-  });
-
-};
-
-function calcValue(value) {
-  const input = document.getElementById('calcInput');
-  try {
-    if (input.value == 'err*')  {
-      input.value = '0';
-    }
-    if (value === 'C') {
-      input.value = '0';
-    } else if (value === '=') {
-      if (input.value.length == 0) {return};
-      input.value = input.value.replaceAll("^","**");
-      input.value = eval(input.value);
-    } else if (value === null) {
-      input.value = input.value.substring(0, input.value.length - 1);
-    } else if (value === 'sqrt') {
-      if (input.value.length == 0) {return};
-      input.value = input.value.replaceAll("^","**");
-      input.value = eval(input.value);
-      input.value = Math.sqrt(input.value);
-    } else {
-      if (value === 'x') {
-        value = '*';
-      }
-      if ((value == "*" || value == "/" || value == "-" || value == "+" || value == "." || value == "^") && (input.value[input.value.length-1] == "^" || input.value[input.value.length-1] == "." || input.value[input.value.length-1] == "-" || input.value[input.value.length-1] == "+" || input.value[input.value.length-1] == "*" || input.value[input.value.length-1] == "/")) {return};
-      if (value && !/[0-9/*\-+x^.]/.test(value)) {return}
-      input.value += value;
-      if (input.value[0] === '0' && (input.value[1] !== '.' && input.value[1] !== '*' && input.value[1] !== '/' && input.value[1] !== '+' && input.value[1] !== '^')) {
-        input.value = input.value.substring(1);
-      } else if (input.value[0] == "*" || input.value[0] == "/" || input.value[0] == "+" || input.value[0] == "." || input.value[0] == "^") {
-        input.value = "0"+input.value;
-      }
-    }
-  } catch (e) {
-    input.value = 'err*';
-  };
-}
 
 function openNotepad(text,file,key) {
   var prompted = false;
@@ -3372,22 +3303,6 @@ async function openFolder(folderPath, key) {
             const ftype = getTypeForFilename(fname);
             addBtn('Open', async () => { Fopen(p, ftype); });
           }
-          
-          addBtn('Copy', async () => {
-             if (isMultiSelected) {
-                 globalData["selectedFiles"] = new Set(selectedRows);
-                 Fcopy();
-             } else {
-                 Fcopy(p);
-             }
-          });
-          
-          if (globalData["clipboard"] && globalData["clipboard"].files.size > 0) {
-              addBtn('Paste', async () => {
-                  await Fpaste();
-                  await renderPath(currentPath);
-              });
-          }
 
           if (!hasFolderSelected) {
             if (isMultiSelected) {
@@ -3431,6 +3346,22 @@ async function openFolder(folderPath, key) {
                  await Frefresh();
                  try { await renderPath(currentPath); } catch {}
              });
+          }
+
+          addBtn('Copy', async () => {
+             if (isMultiSelected) {
+                 globalData["selectedFiles"] = new Set(selectedRows);
+                 Fcopy();
+             } else {
+                 Fcopy(p);
+             }
+          });
+          
+          if (globalData["clipboard"] && globalData["clipboard"].files.size > 0) {
+              addBtn('Paste', async () => {
+                  await Fpaste();
+                  await renderPath(currentPath);
+              });
           }
 
           menuEl.style.position = 'fixed';
@@ -4018,8 +3949,6 @@ document.addEventListener("click", async (event)=> {
   };
   if (event.target.id == "menuNotepad") {
     openNotepad();
-  } else if (event.target.id == "menuCalculator") {
-    openCalculator();
   } else if (event.target.id == "power") {
     document.getElementById("menu").style.display = "none";
     document.getElementById("logout").style.display = "block";
