@@ -367,6 +367,7 @@ function setupFileDragging(fileElement) {
   let preventNextClick = false;
   let draggedFiles = [];
   let clickedFileName, clickedCtrlKey;
+  let ghost = null;
   
   const onMouseDown = function(e) {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -429,6 +430,7 @@ function setupFileDragging(fileElement) {
       hasMoved = true;
       draggedFiles.forEach(df => {
         df.element.style.opacity = '0.7';
+        df.element.style.pointerEvents = 'none';
       });
     }
     
@@ -450,6 +452,46 @@ function setupFileDragging(fileElement) {
         df.element.style.left = newLeft + 'px';
         df.element.style.top = newTop + 'px';
       });
+
+      const elAt = document.elementFromPoint(e.clientX, e.clientY);
+      let targetName = null;
+      
+      const folderEl = elAt ? elAt.closest('file[extension="Folder"]') : null;
+      if (folderEl) {
+         const fid = folderEl.getAttribute('data-name');
+         const draggedSet = new Set(draggedFiles.map(df => df.originalFileName));
+         if (!draggedSet.has(fid)) {
+             targetName = fid.replace(/\/$/, '');
+         }
+      }
+      
+      if (!targetName) {
+          const folderWin = elAt ? elAt.closest('.folder-window') : null;
+          if (folderWin) {
+              targetName = (folderWin.dataset.path || '').replace(/\/$/, '') || 'Folder';
+          }
+      }
+
+      if (targetName) {
+          if (!ghost) {
+              ghost = document.createElement('div');
+              ghost.style.position = 'fixed';
+              ghost.style.zIndex = '9999';
+              ghost.style.pointerEvents = 'none';
+              ghost.style.padding = '6px 10px';
+              ghost.style.borderRadius = '6px';
+              ghost.style.background = 'rgba(30,30,30,0.9)';
+              ghost.style.color = '#fff';
+              ghost.style.fontSize = '12px';
+              ghost.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+              document.body.appendChild(ghost);
+          }
+          ghost.textContent = `Move to ${targetName}`;
+          ghost.style.left = (e.clientX + 15) + 'px';
+          ghost.style.top = (e.clientY + 15) + 'px';
+      } else {
+          if (ghost) { ghost.remove(); ghost = null; }
+      }
     }
   };
   
@@ -458,6 +500,8 @@ function setupFileDragging(fileElement) {
     
     if (e.target.closest('context')) return;
     
+    if (ghost) { ghost.remove(); ghost = null; }
+
     if (!hasMoved) {
       if (clickedCtrlKey) {
         toggleFileSelection(clickedFileName, true);
@@ -474,12 +518,11 @@ function setupFileDragging(fileElement) {
     draggedFiles.forEach(df => {
       df.element.style.zIndex = '';
       df.element.style.opacity = '';
+      df.element.style.pointerEvents = '';
     });
     
     if (hasMoved) {
-      draggedFiles.forEach(df => df.element.style.display = 'none');
       let elementAtPoint = document.elementFromPoint(e.clientX, e.clientY);
-      draggedFiles.forEach(df => df.element.style.display = '');
 
       const draggedSet = new Set(draggedFiles.map(df => df.originalFileName));
       let folderEl = elementAtPoint ? elementAtPoint.closest('file[extension="Folder"]') : null;
