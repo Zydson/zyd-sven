@@ -1337,7 +1337,7 @@ async function createNewItem(type, defaultExt = '') {
   const img = el.querySelector('img[extension][data-name]');
   const tooltip = el.querySelector('div.tooltip');
   
-  const input = createEditableInput(span, displayName, !!defaultExt);
+  const input = createEditableInput(span, displayName, true);
   
   let finished = false;
   
