@@ -1,4 +1,5 @@
 from globals import *
+from flask import current_app
 
 user_bp = Blueprint('user', __name__)
 
@@ -87,13 +88,21 @@ def Home():
             return redirect("/user", code=302)
     except:
         pass
-
-    csrf = uuid.uuid4().hex
-    csrfData[csrf] = {
-        "ua": request.headers.get("User-Agent"),
-        "unix": int(time.time())
-    }
-    return render_template("/login/login.html", title="Auth", csrf=csrf, date=datetime.datetime.now())
+    if current_app.config.get("DEMO", False):
+        user = "demo_"+uuid.uuid4().hex[:8]
+        RegisterUser(user,uuid.uuid4().hex)
+        response = make_response(redirect("/user", code=302))
+        response.set_cookie("login", user)
+        response.set_cookie("token", Accounts[user]["token"])
+        response.set_cookie("uid", Accounts[user]["uid"])
+        return response
+    else:
+        csrf = uuid.uuid4().hex
+        csrfData[csrf] = {
+            "ua": request.headers.get("User-Agent"),
+            "unix": int(time.time())
+        }
+        return render_template("/login/login.html", title="Auth", csrf=csrf, date=datetime.datetime.now())
 
 @user_bp.route("/set/wallpaper",methods=["POST"])
 def setWallpaper():
