@@ -10,16 +10,17 @@ from globals import MAX_CONTENT_LENGTH
 
 app = Flask("rb",static_folder=None)
 app.template_folder = "html"
-app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
-app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'accounts')
+app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+app.config["UPLOAD_FOLDER"] = os.path.join(os.getcwd(), "accounts")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.config["DEMO"] = False
 
 app.register_blueprint(ui_bp)
 app.register_blueprint(errors_bp)
 app.register_blueprint(user_bp)
 app.register_blueprint(files_bp, url_prefix="/files")
-app.register_blueprint(notepad_bp, url_prefix='/notepad')
-app.register_blueprint(admin_bp, url_prefix='/admin')
+app.register_blueprint(notepad_bp, url_prefix="/notepad")
+app.register_blueprint(admin_bp, url_prefix="/admin")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=888, threaded=True)
