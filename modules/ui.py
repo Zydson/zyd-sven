@@ -1,5 +1,6 @@
 from globals import *
 from globals import MAX_CONTENT_LENGTH
+from flask import current_app
 
 ui_bp = Blueprint('ui', __name__)
 
@@ -11,7 +12,7 @@ def UI():
         uid = request.cookies.getlist('uid')[0]
 
         if allowed(request):
-            return render_template("/ui/ui.html", title="Desktop", login=login, token=token, uid=uid, wp=Accounts[login]["wallpaper"], date=datetime.datetime.now(), max_upload_size=MAX_CONTENT_LENGTH)
+            return render_template("/ui/ui.html", title="Desktop", demo=current_app.config.get("DEMO", False), login=login, token=token, uid=uid, wp=Accounts[login]["wallpaper"], date=datetime.datetime.now(), max_upload_size=MAX_CONTENT_LENGTH)
         else:
             return redirect("/", code=302)
     except:
