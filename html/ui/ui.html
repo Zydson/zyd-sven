@@ -22,7 +22,12 @@
   </head>
   <body>
     <div id="logout"></div>
-    <div class="navbar">
+    {% if demo %}
+    <div id="demo-banner" style="background: rgba(255, 0, 0, 0.8); color: white; text-align: center; line-height: 20px; position: fixed; top: 0; width: 100%; z-index: 10001; font-weight: bold; box-sizing: border-box; height: 40px;">
+        Demo mode - data will be reset
+    </div>
+    {% endif %}
+    <div class="navbar" {% if demo %}style="top: 40px;"{% endif %}>
       <div class="dropdown">
         <button class="dropbtn" onclick="menu()" id="menuBtn">
           <img id="menuBtn" style="position: relative; margin:0; padding: 0; width: 2.3vh; height: 2.3vh;" src="static/icons/menu.svg">
@@ -37,7 +42,7 @@
     </div>
 
     <div id="wallpaper" style='background-image: url("wallpaper");'>
-      <div id="Files">
+      <div id="Files" {% if demo %}style="top: calc(40px + 5vh); height: calc(100vh - 40px - 5vh);"{% endif %}>
 
       </div>
       <div id="menu">
