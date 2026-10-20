@@ -17,7 +17,7 @@ pip3 install -r requirements.txt
 python main.py
 ```
 ## showcase
-demo available @ [sven.zydsonek.pl](https://sven.zydsonek.com)
+demo available @ [sven.zydsonek.com](https://sven.zydsonek.com)
 
 https://github.com/user-attachments/assets/c75dd1c8-49ad-4b82-be1c-964275ceae43
 
